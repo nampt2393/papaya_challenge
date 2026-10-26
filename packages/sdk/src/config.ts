@@ -14,13 +14,13 @@ export interface InsuranceSDKOptions {
   apiKey: string;
   environment: Environment;
   /** Overrides the environment's base URL, e.g. a mock server on another port. */
-  baseUrl?: string;
+  baseUrl?: string | undefined;
   /** Per-attempt timeout in ms. Default 30000. */
-  timeout?: number;
+  timeout?: number | undefined;
   /** Retries for transient failures (503, network errors). Default 3. */
-  maxRetries?: number;
+  maxRetries?: number | undefined;
   /** Replace the HTTP layer (advanced use and testing). */
-  transport?: Transport;
+  transport?: Transport | undefined;
 }
 
 export interface ResolvedConfig {

@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { ValidationError } from '../src/errors';
 import type { TransportRequest } from '../src/http/Transport';
 import { InsuranceSDK } from '../src/InsuranceSDK';
-import type { Claim, CreateClaimInput } from '../src/types';
+import type { InsuranceSDKOptions } from '../src/config';
+import type { StatusChangeOptions } from '../src/resources/StatusPoller';
+import type { Claim, ClaimStatus, CreateClaimInput, UploadOptions } from '../src/types';
 import { fakeTransport, isTokenRequest, json, withTokenEndpoint, type FakeReply } from './helpers/fakeTransport';
 
 const valid: CreateClaimInput = {
@@ -83,5 +85,19 @@ describe('claims', () => {
         'must be one of SUBMITTED, DOCUMENTS_VERIFIED, UNDER_ASSESSMENT, PENDING_INFO, APPROVED, REJECTED, PAYMENT_INITIATED, CLOSED',
     });
     expect(transport.calls).toHaveLength(0);
+  });
+});
+
+describe('public option types', () => {
+  it('accept explicit undefined for optional properties (exactOptionalPropertyTypes)', async () => {
+    const { sdk } = setup(() => json(200, { data: [], page: 1, pageSize: 20, total: 0, totalPages: 0 }));
+    const status: ClaimStatus | undefined = undefined;
+    const pageSize: number | undefined = undefined;
+    await expect(sdk.claims.list({ status, page: undefined, pageSize })).resolves.toMatchObject({ total: 0 });
+    const options: InsuranceSDKOptions = { apiKey: 'pk_test_1', environment: 'sandbox', baseUrl: undefined, timeout: undefined };
+    expect(() => new InsuranceSDK(options)).not.toThrow();
+    const uploadOptions: UploadOptions = { type: 'other', filename: undefined, contentType: undefined, size: undefined, onProgress: undefined };
+    const statusOptions: StatusChangeOptions = { intervalMs: undefined, onError: undefined };
+    expect([uploadOptions, statusOptions]).toHaveLength(2);
   });
 });

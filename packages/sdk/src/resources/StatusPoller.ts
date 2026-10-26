@@ -9,12 +9,12 @@ export type StatusChangeCallback = (newStatus: ClaimStatus, claim: Claim) => voi
 
 export interface StatusChangeOptions {
   /** Poll interval in ms. Default 5000, minimum 1000. */
-  intervalMs?: number;
+  intervalMs?: number | undefined;
   /**
    * Errors that survive the SDK's own retries, and errors thrown by your callback.
    * Polling continues, except after `AuthError` or a 404 `ApiError`.
    */
-  onError?: (error: SDKError) => void;
+  onError?: ((error: SDKError) => void) | undefined;
 }
 
 const DEFAULT_INTERVAL_MS = 5000;

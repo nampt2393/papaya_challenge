@@ -35,11 +35,11 @@ export interface Claim extends CreateClaimInput {
 }
 
 export interface ListClaimsParams {
-  status?: ClaimStatus;
+  status?: ClaimStatus | undefined;
   /** 1-based, default 1. */
-  page?: number;
+  page?: number | undefined;
   /** 1–100, default 20. */
-  pageSize?: number;
+  pageSize?: number | undefined;
 }
 
 export interface Page<T> {
@@ -66,13 +66,13 @@ export type UploadSource = Buffer | Readable | string;
 export interface UploadOptions {
   type: DocumentType;
   /** Required when the source is a Buffer or stream. */
-  filename?: string;
+  filename?: string | undefined;
   /** Inferred from the filename extension when omitted. */
-  contentType?: string;
+  contentType?: string | undefined;
   /** Required when the source is a stream. */
-  size?: number;
+  size?: number | undefined;
   /** Called with integer percentages (0–100), increasing, ending at 100. */
-  onProgress?: (percent: number) => void;
+  onProgress?: ((percent: number) => void) | undefined;
 }
 
 export type ValidationResult = { ok: true } | { ok: false; fields: Record<string, string> };
