@@ -238,6 +238,10 @@ interface Transport { send(req: TransportRequest): Promise<TransportResponse> }
 ### 4.4 RetryPolicy (pure)
 
 - Retries: HTTP 503 and `NetworkError`. Never retries 400, 401, 403, 404, 409 or other 4xx/5xx.
+- Non-idempotent requests (POST claim create, document upload) are retried after a
+  `NetworkError` only when `requestSent` is false (no connection was established);
+  otherwise a timeout after the server committed the claim would create a hidden
+  duplicate. The token request is idempotent and always retried. (Amended after final review.)
 - `delayFor(attempt) = min(baseDelay · 2^attempt, maxDelay) + jitter`,
   defaults `baseDelay = 200 ms`, `maxDelay = 5 000 ms`, jitter uniform in `[0, baseDelay)`.
 - `maxRetries` default 3 (so up to 4 attempts). Sleep and random are injectable.

@@ -6,7 +6,7 @@ Submit insurance claims, upload supporting documents and track claim status from
 - Fully typed: no `any`, with autocompletion for every option, status and error
 - Checks your input before sending it, so mistakes surface immediately with field-level messages
 - Handles authentication for you: it exchanges your API key for a token and refreshes it before it expires
-- Retries transient failures (HTTP 503, network errors) with exponential backoff
+- Retries transient failures (HTTP 503, network errors) with exponential backoff, without ever duplicating a claim
 - Reports upload progress and claim status changes
 
 ```ts
@@ -63,7 +63,7 @@ new InsuranceSDK(options: InsuranceSDKOptions)
 | `environment` | `'sandbox' \| 'production'` | **required** | Selects the base URL: `http://localhost:4000` or `https://api.insurance.example.com`. |
 | `baseUrl` | `string` | from `environment` | Overrides the base URL (e.g. the mock server on another port). A trailing `/` is removed. |
 | `timeout` | `number` (ms) | `30000` | Timeout for each attempt, covering connect, upload and response. |
-| `maxRetries` | `number` | `3` | Retries for transient failures (503 and network errors). `0` disables retries. |
+| `maxRetries` | `number` | `3` | Retries for transient failures: 503 responses and network errors. Claim creation and uploads are retried after a network error only if the connection was never established (see [§8](#8-error-handling-patterns)). `0` disables retries. |
 | `transport` | `Transport` | `NodeTransport` | Replaces the HTTP layer. Useful in tests (see [§9](#9-testing-your-integration)). |
 
 **Throws** `ValidationError` synchronously when options are invalid, e.g. `{ apiKey: 'required' }`, `{ apiKey: 'must start with pk_' }`, `{ environment: 'must be sandbox or production' }`, `{ timeout: 'must be a positive integer' }`, `{ maxRetries: 'must be a non-negative integer' }` or `{ baseUrl: 'must be a valid URL' }`.
@@ -142,7 +142,7 @@ upload(claimId: string, source: string | Buffer | Readable, options: UploadOptio
 
 Uploads a PDF, JPEG or PNG of at most 10 MB.
 
-| `source` | Required options | Retried on 503 / network error? |
+| `source` | Required options | Retried on 503? |
 |---|---|---|
 | File path (`string`) | – (`filename` defaults to the file's name) | Yes |
 | `Buffer` | `filename` | Yes |
@@ -174,7 +174,7 @@ Every error the SDK throws extends `SDKError`, which extends `Error`. Use `insta
 |---|---|---|
 | `ValidationError` | Invalid input (checked before sending), or a 400 from the API | `fields: Record<string, string>`, e.g. `{ amount: 'must be positive' }` |
 | `AuthError` | Invalid API key, or a token the API keeps rejecting after a refresh | `code: 'INVALID_API_KEY' \| 'TOKEN_EXPIRED' \| 'UNAUTHORIZED'` |
-| `NetworkError` | No HTTP response: connection failure or timeout, after retries | `code: 'NETWORK_ERROR' \| 'TIMEOUT'`, `retryable`, `cause` |
+| `NetworkError` | No HTTP response: connection failure or timeout, after retries | `code: 'NETWORK_ERROR' \| 'TIMEOUT'`, `retryable`, `requestSent` (the server may have received the request), `cause` |
 | `ApiError` | Any other error response, including 503 after retries | `status`, `code` (e.g. `NOT_FOUND`, `SERVICE_UNAVAILABLE`, `FILE_TOO_LARGE`, or `HTTP_<status>` for non-JSON bodies), `body` |
 
 All errors carry `code`, `message` and, when the API returned one, `requestId` (from the `x-request-id` header).
@@ -276,7 +276,7 @@ Things to watch:
   const result = validateClaim(formData);
   if (!result.ok) showFieldErrors(result.fields); // { policyId: 'must match POL-<digits>', ... }
   ```
-- **Avoid duplicates:** `create` is not idempotent. If a call fails with a `NetworkError` after the request may have reached the server, check `claims.list()` for a matching claim before you submit again.
+- **Avoid duplicates:** `create` is not idempotent, so the SDK never retries it once the request may have reached the server. A `NetworkError` with `requestSent: true` means the claim may or may not exist: check `claims.list()` for a matching claim before you submit again.
 
 ## 5. Uploading documents
 
@@ -304,7 +304,7 @@ await sdk.documents.upload(claim.id, object.Body as Readable, {
     onProgress: (percent) => job.updateProgress(percent),
   });
   ```
-- **Retries:** paths and Buffers are retried on 503 or network errors. Streams are **not**, because a stream can only be read once. If you need retries for a stream, buffer it first (fine for files of 10 MB or less) or write it to a temporary file.
+- **Retries:** paths and Buffers are retried on 503, and on network errors that happen before the connection is established. Streams are **not**, because a stream can only be read once. If you need retries for a stream, buffer it first (fine for files of 10 MB or less) or write it to a temporary file.
 
 ## 6. Tracking status
 
@@ -401,7 +401,7 @@ try {
 }
 ```
 
-**What the SDK already retries for you:** HTTP 503 and network errors (up to `maxRetries`, default 3, with backoff), plus one token refresh after a 401. Don't wrap SDK calls in your own immediate retry loop; queue the work and retry later instead.
+**What the SDK already retries for you:** HTTP 503 (the server rejected the request, so repeating it is safe) and network errors, up to `maxRetries` (default 3) with backoff, plus one token refresh after a 401. Reads (`get`, `list`, polling) are retried after any network error. Claim creation and uploads are retried after a network error only when the connection was never established; otherwise a timeout could hide a duplicate claim. In that case you get a `NetworkError` with `requestSent: true`. Don't wrap SDK calls in your own immediate retry loop; queue the work and retry later instead.
 
 **Showing `ValidationError.fields` to users:** the keys match `CreateClaimInput` property names, so you can map them straight to form fields. Messages are short and lowercase (`'must be positive'`), so you can prefix them with your own label: `Amount ${fields.amount}`.
 
@@ -485,4 +485,4 @@ A transport resolves for every HTTP status and rejects only with `NetworkError`,
 
 **Does the SDK work in the browser?** No. It's built for Node.js and needs your secret API key, which must never reach a browser.
 
-**Is `create` safe to retry?** Not blindly. Retries after 503 are safe, because the request was rejected, and the SDK already performs them. After a `NetworkError`, the request may have reached the server, so check for the claim before creating it again.
+**Is `create` safe to retry?** Not blindly. The SDK retries it only when that is safe: after a 503, or when the connection was never made. If you get a `NetworkError` with `requestSent: true`, the request may have reached the server, so check for the claim before creating it again.

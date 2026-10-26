@@ -16,6 +16,11 @@ export interface RequestOptions {
   onUploadProgress?: (sentBytes: number, totalBytes: number) => void;
   /** Attach a bearer token. Default true. */
   auth?: boolean;
+  /**
+   * Safe to repeat after the server may have processed it. Default: every method except POST.
+   * Non-idempotent requests are retried after a network error only if the connection was never made.
+   */
+  idempotent?: boolean;
 }
 
 export interface HttpClientOptions {
@@ -41,7 +46,13 @@ export class HttpClient {
     this.sleep = options.sleep ?? defaultSleep;
     this.auth = new AuthManager({
       fetchToken: () =>
-        this.request<TokenResponse>({ method: 'POST', path: '/auth/token', json: { apiKey: options.apiKey }, auth: false }),
+        this.request<TokenResponse>({
+          method: 'POST',
+          path: '/auth/token',
+          json: { apiKey: options.apiKey },
+          auth: false,
+          idempotent: true,
+        }),
       ...(options.now ? { now: options.now } : {}),
     });
   }
@@ -49,6 +60,7 @@ export class HttpClient {
   async request<T>(options: RequestOptions): Promise<T> {
     const { retry, transport } = this.options;
     const replayable = options.multipart?.replayable ?? true;
+    const idempotent = options.idempotent ?? options.method !== 'POST';
     let attempt = 0;
     let reauthenticated = false;
 
@@ -58,7 +70,8 @@ export class HttpClient {
       try {
         res = await transport.send(this.buildRequest(options, token));
       } catch (error) {
-        if (replayable && retry.shouldRetry(error, attempt)) {
+        const mayHaveBeenProcessed = error instanceof NetworkError && error.requestSent && !idempotent;
+        if (replayable && !mayHaveBeenProcessed && retry.shouldRetry(error, attempt)) {
           await this.sleep(retry.delayFor(attempt++));
           continue;
         }

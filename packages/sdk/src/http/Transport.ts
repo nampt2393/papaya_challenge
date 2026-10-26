@@ -69,6 +69,8 @@ export class NodeTransport implements Transport {
 
       let settled = false;
       let responded = false;
+      // Once connected, the server may have received the request.
+      let requestSent = false;
       // The multipart source (lazy until piped); destroyed once the exchange is over so file handles never leak.
       const source: Readable | undefined = body !== undefined && typeof body !== 'string' ? body.createStream() : undefined;
       const stopUpload = () => {
@@ -88,7 +90,7 @@ export class NodeTransport implements Transport {
         stopUpload();
         const chunks: Buffer[] = [];
         res.on('data', (chunk: Buffer) => chunks.push(chunk));
-        res.on('error', (error) => fail(new NetworkError(`Network request failed: ${error.message}`, { cause: error })));
+        res.on('error', (error) => fail(new NetworkError(`Network request failed: ${error.message}`, { cause: error, requestSent: true })));
         res.on('end', () => {
           if (settled) return;
           settled = true;
@@ -103,14 +105,18 @@ export class NodeTransport implements Transport {
       });
 
       const timer = setTimeout(() => {
-        fail(new NetworkError(`Request timed out after ${req.timeoutMs}ms`, { code: 'TIMEOUT' }));
+        fail(new NetworkError(`Request timed out after ${req.timeoutMs}ms`, { code: 'TIMEOUT', requestSent }));
         clientRequest.destroy();
       }, req.timeoutMs);
 
       clientRequest.on('error', (error) => {
         // After an early response, write errors (EPIPE, ECONNRESET) are expected: the response wins.
         if (responded) return;
-        fail(new NetworkError(`Network request failed: ${error.message}`, { cause: error }));
+        fail(new NetworkError(`Network request failed: ${error.message}`, { cause: error, requestSent }));
+      });
+      clientRequest.on('socket', (socket) => {
+        if (!socket.connecting) requestSent = true; // reused keep-alive socket
+        else socket.once('connect', () => (requestSent = true));
       });
 
       if (source === undefined || body === undefined || typeof body === 'string') {

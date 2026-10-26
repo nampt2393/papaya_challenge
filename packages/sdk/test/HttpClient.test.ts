@@ -153,4 +153,44 @@ describe('HttpClient', () => {
     expect(results).toEqual([{ ok: true }, { ok: true }, { ok: true }]);
     expect(tokenCalls()).toBe(2);
   });
+
+  describe('non-idempotent POST and network errors', () => {
+    it('does not retry a POST whose request may have reached the server', async () => {
+      const { client, apiCalls } = setup(() => new NetworkError('timed out', { code: 'TIMEOUT', requestSent: true }));
+      await expect(client.request({ method: 'POST', path: '/claims', json: {} })).rejects.toMatchObject({ code: 'TIMEOUT' });
+      expect(apiCalls()).toBe(1);
+    });
+
+    it('retries a POST when the connection was never established', async () => {
+      const { client, apiCalls } = setup((_req, i) => (i === 0 ? new NetworkError('refused') : json(201, { id: 'CLM-0001' })));
+      await expect(client.request({ method: 'POST', path: '/claims', json: {} })).resolves.toEqual({ id: 'CLM-0001' });
+      expect(apiCalls()).toBe(2);
+    });
+
+    it('still retries a GET after the request was sent', async () => {
+      const { client, apiCalls } = setup((_req, i) =>
+        i === 0 ? new NetworkError('reset', { requestSent: true }) : json(200, { ok: true }),
+      );
+      await expect(client.request({ method: 'GET', path: '/claims' })).resolves.toEqual({ ok: true });
+      expect(apiCalls()).toBe(2);
+    });
+
+    it('still retries the token request after it was sent', async () => {
+      let tokenAttempts = 0;
+      const transport = fakeTransport((req) => {
+        if (isTokenRequest(req) && tokenAttempts++ === 0) return new NetworkError('reset', { requestSent: true });
+        return isTokenRequest(req) ? json(200, { accessToken: 'tok', expiresIn: 3600 }) : json(200, { ok: true });
+      });
+      const client = new HttpClient({
+        baseUrl: 'http://api.test',
+        apiKey: 'pk_test_1',
+        timeoutMs: 1000,
+        transport,
+        retry: new RetryPolicy(),
+        sleep: async () => {},
+      });
+      await expect(client.request({ method: 'GET', path: '/claims' })).resolves.toEqual({ ok: true });
+      expect(tokenAttempts).toBe(2);
+    });
+  });
 });

@@ -92,6 +92,7 @@ describe('NodeTransport', () => {
       name: 'NetworkError',
       code: 'NETWORK_ERROR',
       retryable: true,
+      requestSent: false,
     });
   });
 
@@ -99,6 +100,7 @@ describe('NodeTransport', () => {
     await expect(transport.send({ method: 'GET', url: `${base}/hang`, headers: {}, timeoutMs: 100 })).rejects.toMatchObject({
       name: 'NetworkError',
       code: 'TIMEOUT',
+      requestSent: true,
     });
   });
 

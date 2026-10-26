@@ -42,10 +42,19 @@ export type NetworkErrorCode = 'NETWORK_ERROR' | 'TIMEOUT';
 export class NetworkError extends SDKError {
   declare readonly code: NetworkErrorCode;
   readonly retryable: boolean;
+  /**
+   * `true` when the connection was established, so the server may have received and processed
+   * the request. The SDK does not retry claim creation or uploads in that case, to avoid duplicates.
+   */
+  readonly requestSent: boolean;
 
-  constructor(message: string, options: { code?: NetworkErrorCode; cause?: unknown; retryable?: boolean } = {}) {
+  constructor(
+    message: string,
+    options: { code?: NetworkErrorCode; cause?: unknown; retryable?: boolean; requestSent?: boolean } = {},
+  ) {
     super(message, { code: options.code ?? 'NETWORK_ERROR', cause: options.cause });
     this.retryable = options.retryable ?? true;
+    this.requestSent = options.requestSent ?? false;
   }
 }
 
