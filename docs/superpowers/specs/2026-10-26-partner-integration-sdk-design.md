@@ -216,8 +216,21 @@ interface Transport { send(req: TransportRequest): Promise<TransportResponse> }
 - `getToken()`: returns cached JWT if it expires more than 60 s from now;
   otherwise calls `POST /auth/token { apiKey }` and caches
   `{ accessToken, expiresAt = now + expiresIn }`.
-- Single-flight: concurrent callers during a refresh await one shared promise.
-- `invalidate()`: clears the cache (called by HttpClient on 401).
+- Single-flight: concurrent callers during a refresh await one shared promise
+  (`refreshPromise ??= fetchToken().finally(() => refreshPromise = undefined)`).
+  On success all waiters receive the same new token. On failure all waiters
+  reject with the same error, and the promise is cleared so the next call
+  attempts a fresh refresh (failures are never cached).
+- `invalidate(failedToken)`: compare-before-clear, called by HttpClient on 401.
+  Clears the cache only if the cached token is still `failedToken`; if a
+  concurrent caller has already stored a newer token, it does nothing. This
+  guarantees that N concurrent requests rejected with the same stale token
+  trigger exactly one refresh:
+  ```ts
+  invalidate(failedToken: string): void {
+    if (this.token?.value === failedToken) this.token = undefined;
+  }
+  ```
 - Token endpoint 401 (`INVALID_API_KEY`) → `AuthError`, never retried.
 - The token request itself goes through the retry policy (503/network).
 - Clock is injectable for tests.
@@ -240,7 +253,7 @@ interface Transport { send(req: TransportRequest): Promise<TransportResponse> }
 for attempt in 0..maxRetries:
   token = await auth.getToken()
   res   = await transport.send(req + Authorization: Bearer token)   (NetworkError may throw)
-  if res.status == 401 and not yet re-authed: auth.invalidate(); re-auth once; continue
+  if res.status == 401 and not yet re-authed: auth.invalidate(token); continue   // next getToken() joins/starts single refresh
   if retryable(res/err) and attempt < maxRetries: sleep(delayFor(attempt)); continue
   map → return body as T, or throw typed error
 ```
@@ -449,15 +462,20 @@ Public API also carries TSDoc comments for IDE hover help.
 
 ## 9. Testing strategy
 
-Vitest, run with `npm test` from the root. Target ~35 tests (requirement ≥ 20).
+Vitest, run with `npm test` from the root. Target ~38 tests (requirement ≥ 20).
 
 **SDK unit tests (fake `Transport`, injectable clock/sleep/random):**
 - Validation: each claim field rule (missing, bad format), document type/MIME/size.
 - Config: missing/invalid `apiKey`, environment → baseUrl.
 - RetryPolicy: delay growth and cap, retryable vs non-retryable statuses.
-- AuthManager: caches token; refreshes near expiry; single-flight on concurrent
-  requests; 401 → invalidate → one retry → success; second 401 → `AuthError`;
-  invalid API key → `AuthError`.
+- AuthManager: caches token; refreshes near expiry; 401 → invalidate → one
+  retry → success; second 401 → `AuthError`; invalid API key → `AuthError`.
+- Concurrency:
+  - 3 concurrent calls with an expired cached token → exactly 1 `/auth/token` request.
+  - 3 concurrent calls that all receive 401 for the same token → exactly 1 refresh;
+    all 3 succeed on retry with the new token.
+  - Refresh fails with `INVALID_API_KEY` → all 3 calls reject with `AuthError`;
+    a subsequent call triggers a new refresh attempt.
 - HttpClient: 503 → 503 → 200 succeeds; retries exhausted → `ApiError(503)`;
   network failure → retry → success; persistent network failure → `NetworkError`;
   400 → `ValidationError` with fields; 404/409 → `ApiError`.
