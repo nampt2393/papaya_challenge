@@ -11,6 +11,11 @@ const transport = new NodeTransport();
 
 beforeAll(async () => {
   server = createServer((req, res) => {
+    if (req.url === '/early') {
+      res.writeHead(404, { 'content-type': 'application/json', connection: 'close' });
+      res.end('{"code":"NOT_FOUND"}');
+      return;
+    }
     const chunks: Buffer[] = [];
     req.on('data', (chunk: Buffer) => chunks.push(chunk));
     req.on('end', () => {
@@ -33,6 +38,8 @@ beforeAll(async () => {
           res.end();
           return;
         case '/hang':
+          return;
+        case '/early':
           return;
         case '/upload':
           res.writeHead(201, { 'content-type': 'application/json' });
@@ -122,5 +129,35 @@ describe('NodeTransport', () => {
     expect(echoed.raw.endsWith(`--${body.boundary}--\r\n`)).toBe(true);
     expect(progress.at(-1)).toBe(body.contentLength);
     expect(progress).toEqual([...progress].sort((a, b) => a - b));
+  });
+
+  it('destroys the upload source when the server answers before reading the body', async () => {
+    const size = 50 * 1024 * 1024;
+    let source: Readable | undefined;
+    const body = buildMultipart(
+      { type: 'other' },
+      {
+        fieldName: 'file',
+        filename: 'big.pdf',
+        contentType: 'application/pdf',
+        size,
+        open: () => {
+          let sent = 0;
+          source = new Readable({
+            read() {
+              if (sent >= size) return this.push(null);
+              sent += 64 * 1024;
+              this.push(Buffer.alloc(64 * 1024));
+            },
+          });
+          return source;
+        },
+      },
+      true,
+    );
+    const res = await transport.send({ method: 'POST', url: `${base}/early`, headers: {}, body, timeoutMs: 2000 });
+    expect(res.status).toBe(404);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(source?.destroyed).toBe(true);
   });
 });

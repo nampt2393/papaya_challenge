@@ -1,6 +1,6 @@
 import { request as httpRequest, type IncomingMessage } from 'node:http';
 import { request as httpsRequest } from 'node:https';
-import { Transform } from 'node:stream';
+import { type Readable, Transform } from 'node:stream';
 import { NetworkError } from '../errors';
 import type { MultipartBody } from './multipart';
 
@@ -68,14 +68,24 @@ export class NodeTransport implements Transport {
       }
 
       let settled = false;
+      let responded = false;
+      // The multipart source (lazy until piped); destroyed once the exchange is over so file handles never leak.
+      const source: Readable | undefined = body !== undefined && typeof body !== 'string' ? body.createStream() : undefined;
+      const stopUpload = () => {
+        if (source && !source.destroyed) source.destroy();
+      };
       const fail = (error: NetworkError) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        stopUpload();
         reject(error);
       };
 
       const clientRequest = request(url, { method: req.method, headers }, (res) => {
+        // The server answered (possibly before reading the whole body): stop uploading.
+        responded = true;
+        stopUpload();
         const chunks: Buffer[] = [];
         res.on('data', (chunk: Buffer) => chunks.push(chunk));
         res.on('error', (error) => fail(new NetworkError(`Network request failed: ${error.message}`, { cause: error })));
@@ -97,9 +107,13 @@ export class NodeTransport implements Transport {
         clientRequest.destroy();
       }, req.timeoutMs);
 
-      clientRequest.on('error', (error) => fail(new NetworkError(`Network request failed: ${error.message}`, { cause: error })));
+      clientRequest.on('error', (error) => {
+        // After an early response, write errors (EPIPE, ECONNRESET) are expected: the response wins.
+        if (responded) return;
+        fail(new NetworkError(`Network request failed: ${error.message}`, { cause: error }));
+      });
 
-      if (body === undefined || typeof body === 'string') {
+      if (source === undefined || body === undefined || typeof body === 'string') {
         clientRequest.end(body);
         return;
       }
@@ -112,7 +126,6 @@ export class NodeTransport implements Transport {
           callback(null, chunk);
         },
       });
-      const source = body.createStream();
       source.on('error', (error) => {
         fail(new NetworkError(`Failed to read upload body: ${error.message}`, { cause: error, retryable: false }));
         clientRequest.destroy();
