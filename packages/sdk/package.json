@@ -1,0 +1,8 @@
+{
+  "name": "@insurance/partner-sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for submitting insurance claims, uploading documents and tracking claim status.",
+  "type": "module",
+  "engines": { "node": ">=20.6" },
+  "scripts": {}
+}

@@ -1,0 +1,12 @@
+{
+  "name": "@insurance/mock-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=20.6" },
+  "dependencies": {
+    "@fastify/multipart": "^9.0.1",
+    "@insurance/partner-sdk": "*",
+    "fastify": "^5.1.0"
+  }
+}

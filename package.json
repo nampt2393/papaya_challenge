@@ -1,0 +1,26 @@
+{
+  "name": "insurance-partner-sdk-monorepo",
+  "private": true,
+  "type": "module",
+  "workspaces": ["packages/*"],
+  "engines": { "node": ">=20.6" },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "build": "npm run build -w @insurance/partner-sdk",
+    "mock": "tsx --env-file=.env packages/mock-server/src/main.ts",
+    "example:1": "tsx --env-file=.env examples/01-simple-claim.ts",
+    "example:2": "tsx --env-file=.env examples/02-claim-with-documents.ts",
+    "example:3": "tsx --env-file=.env examples/03-poll-status.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "eslint": "^9.15.0",
+    "tsup": "^8.3.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "typescript-eslint": "^8.15.0",
+    "vitest": "^2.1.5"
+  }
+}
