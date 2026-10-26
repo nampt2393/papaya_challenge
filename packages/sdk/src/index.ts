@@ -9,3 +9,4 @@ export { ENVIRONMENT_URLS, maskApiKey, type Environment, type InsuranceSDKOption
 export { NodeTransport, type HttpMethod, type Transport, type TransportRequest, type TransportResponse } from './http/Transport';
 export type { MultipartBody } from './http/multipart';
 export type { ClaimsResource } from './resources/ClaimsResource';
+export type { DocumentsResource } from './resources/DocumentsResource';

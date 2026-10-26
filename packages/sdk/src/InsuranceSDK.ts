@@ -2,6 +2,7 @@ import { resolveConfig, type InsuranceSDKOptions } from './config';
 import { HttpClient } from './http/HttpClient';
 import { RetryPolicy } from './http/RetryPolicy';
 import { ClaimsResource } from './resources/ClaimsResource';
+import { DocumentsResource } from './resources/DocumentsResource';
 
 /**
  * Entry point of the SDK.
@@ -12,6 +13,7 @@ import { ClaimsResource } from './resources/ClaimsResource';
  */
 export class InsuranceSDK {
   readonly claims: ClaimsResource;
+  readonly documents: DocumentsResource;
 
   /** @throws ValidationError when options are invalid (e.g. missing `apiKey`). */
   constructor(options: InsuranceSDKOptions) {
@@ -24,5 +26,6 @@ export class InsuranceSDK {
       retry: new RetryPolicy({ maxRetries: config.maxRetries }),
     });
     this.claims = new ClaimsResource(http);
+    this.documents = new DocumentsResource(http);
   }
 }
