@@ -118,7 +118,7 @@ Returns `{ data, page, pageSize, total, totalPages }`, newest claims first. A pa
 ```ts
 onStatusChange(
   claimId: string,
-  callback: (newStatus: ClaimStatus, claim: Claim) => void,
+  callback: (newStatus: ClaimStatus, claim: Claim) => void | Promise<void>,
   options?: { intervalMs?: number; onError?: (error: SDKError) => void },
 ): () => void
 ```
@@ -128,7 +128,7 @@ Polls the claim and calls `callback` whenever its status differs from the last o
 | Option | Default | Description |
 |---|---|---|
 | `intervalMs` | `5000` | Time between polls (minimum `1000`). Polls never overlap: the next one is scheduled after the previous one finishes. |
-| `onError` | – | Receives errors that persist after the SDK's own retries, and errors thrown by your callback (`code: 'CALLBACK_ERROR'`). Polling continues, **except** after an `AuthError` or a 404 `ApiError`, where it stops. |
+| `onError` | – | Receives errors that persist after the SDK's own retries, and errors thrown by your callback or rejected by your async callback (`code: 'CALLBACK_ERROR'`). Polling continues, **except** after an `AuthError` or a 404 `ApiError`, where it stops. |
 
 Polling keeps the Node.js process alive until you call the unsubscribe function. **Throws** `ValidationError` synchronously for an empty `claimId` or an invalid `intervalMs`.
 
@@ -342,7 +342,7 @@ const stop = sdk.claims.onStatusChange(
 - **Choosing an interval:** claims move over hours or days, so 30–60 seconds is plenty for a background worker. Use short intervals (a few seconds) only when a user is watching.
 - **Missed intermediate steps:** polling only sees the latest status. If a claim moves twice between polls, the callback fires once, with the newest status. Use `claim.statusHistory` (every step, with timestamps and notes) when you need every transition.
 - **Errors:** transient failures are retried inside each poll. What still fails goes to `onError` and polling carries on. After an `AuthError` (bad key) or a 404 (claim not found), polling stops, since retrying can't help.
-- **Your callback:** if it throws, the error goes to `onError` with `code: 'CALLBACK_ERROR'` and polling continues. Async callbacks are not awaited, so handle their rejections yourself.
+- **Your callback:** it may be `async`. If it throws or its promise rejects, the error goes to `onError` with `code: 'CALLBACK_ERROR'` and polling continues. It is not awaited, so the next poll doesn't wait for it. Always pass `onError`: without it, these errors are dropped.
 - **Shutdown:** active polling keeps the process alive. Call every unsubscribe function on shutdown:
   ```ts
   const subscriptions = new Set<() => void>();

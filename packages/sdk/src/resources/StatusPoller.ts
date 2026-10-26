@@ -5,7 +5,8 @@ import { isPresent } from '../validation/checks';
 /** Stops watching. Safe to call more than once. */
 export type Unsubscribe = () => void;
 
-export type StatusChangeCallback = (newStatus: ClaimStatus, claim: Claim) => void;
+/** May be async: a rejected promise is reported to `onError` like a thrown error. */
+export type StatusChangeCallback = (newStatus: ClaimStatus, claim: Claim) => void | Promise<void>;
 
 export interface StatusChangeOptions {
   /** Poll interval in ms. Default 5000, minimum 1000. */
@@ -22,6 +23,10 @@ const MIN_INTERVAL_MS = 1000;
 
 function toSDKError(error: unknown, code: string, message: string): SDKError {
   return error instanceof SDKError ? error : new SDKError(message, { code, cause: error });
+}
+
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return typeof value === 'object' && value !== null && typeof (value as { then?: unknown }).then === 'function';
 }
 
 function isFatal(error: SDKError): boolean {
@@ -73,10 +78,12 @@ export class StatusPoller {
       const previous = lastStatus;
       lastStatus = claim.status;
       if (previous !== undefined && previous !== claim.status) {
+        const callbackFailed = (error: unknown) => report(toSDKError(error, 'CALLBACK_ERROR', 'Status change callback threw'));
         try {
-          callback(claim.status, claim);
+          const result = callback(claim.status, claim);
+          if (isThenable(result)) result.then(undefined, callbackFailed);
         } catch (error) {
-          report(toSDKError(error, 'CALLBACK_ERROR', 'Status change callback threw'));
+          callbackFailed(error);
         }
       }
       schedule();

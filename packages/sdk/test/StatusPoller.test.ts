@@ -143,6 +143,28 @@ describe('StatusPoller', () => {
     unsubscribe();
   });
 
+  it('a rejecting async callback goes to onError without an unhandled rejection', async () => {
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
+    try {
+      const fetchClaim = scripted(['SUBMITTED', 'DOCUMENTS_VERIFIED', 'UNDER_ASSESSMENT']);
+      const callback = vi.fn(async () => {
+        throw new Error('db write failed');
+      });
+      const onError = vi.fn();
+      const unsubscribe = new StatusPoller(fetchClaim).subscribe('CLM-0001', callback, { intervalMs: 1000, onError });
+      await vi.advanceTimersByTimeAsync(2000);
+      unsubscribe();
+      vi.useRealTimers(); // let Node report unhandled rejections
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(onError).toHaveBeenCalledTimes(2);
+      expect(onError.mock.calls[0]![0]).toMatchObject({ code: 'CALLBACK_ERROR' });
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off('unhandledRejection', unhandled);
+    }
+  });
+
   it('validates claimId and intervalMs synchronously', () => {
     const poller = new StatusPoller(scripted(['SUBMITTED']));
     expect(() => poller.subscribe('', vi.fn())).toThrow(expect.objectContaining({ fields: { claimId: 'required' } }));
