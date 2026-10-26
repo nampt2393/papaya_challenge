@@ -10,3 +10,4 @@ export { NodeTransport, type HttpMethod, type Transport, type TransportRequest, 
 export type { MultipartBody } from './http/multipart';
 export type { ClaimsResource } from './resources/ClaimsResource';
 export type { DocumentsResource } from './resources/DocumentsResource';
+export type { StatusChangeCallback, StatusChangeOptions, Unsubscribe } from './resources/StatusPoller';

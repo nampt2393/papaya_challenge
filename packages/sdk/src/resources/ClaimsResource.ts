@@ -3,10 +3,15 @@ import type { HttpClient } from '../http/HttpClient';
 import type { Claim, CreateClaimInput, ListClaimsParams, Page } from '../types';
 import { validateClaim } from '../validation/validateClaim';
 import { validateListParams } from '../validation/validateListParams';
+import { StatusPoller, type StatusChangeCallback, type StatusChangeOptions, type Unsubscribe } from './StatusPoller';
 
 /** Create, fetch and list claims. */
 export class ClaimsResource {
-  constructor(protected readonly http: HttpClient) {}
+  private readonly poller: StatusPoller;
+
+  constructor(private readonly http: HttpClient) {
+    this.poller = new StatusPoller((id) => this.get(id));
+  }
 
   /**
    * Submits a new claim. Input is validated first; invalid input throws
@@ -33,5 +38,15 @@ export class ClaimsResource {
       path: '/claims',
       query: { status: params.status, page: params.page, pageSize: params.pageSize },
     });
+  }
+
+  /**
+   * Polls a claim and calls `callback` whenever its status changes. The first poll only records the
+   * current status. Polling keeps the process alive until you call the returned function.
+   *
+   * @throws ValidationError synchronously for an empty `claimId` or an `intervalMs` below 1000.
+   */
+  onStatusChange(claimId: string, callback: StatusChangeCallback, options?: StatusChangeOptions): Unsubscribe {
+    return this.poller.subscribe(claimId, callback, options);
   }
 }
