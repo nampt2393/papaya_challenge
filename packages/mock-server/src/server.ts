@@ -1,8 +1,14 @@
+import multipart from '@fastify/multipart';
+import { MAX_DOCUMENT_BYTES } from '@insurance/partner-sdk';
 import Fastify, { type FastifyError, type FastifyInstance } from 'fastify';
 import { loadConfig, type MockConfig } from './config';
+import { authGuard } from './plugins/authGuard';
 import { chaos } from './plugins/chaos';
 import { requestId } from './plugins/requestId';
 import { authRoutes } from './routes/auth';
+import { claimRoutes } from './routes/claims';
+import { controlRoutes } from './routes/control';
+import { documentRoutes } from './routes/documents';
 import { Store } from './store';
 
 declare module 'fastify' {
@@ -30,6 +36,14 @@ export async function buildServer(overrides: Partial<MockConfig> = {}): Promise<
     void reply.code(404).send({ code: 'NOT_FOUND', message: `Route ${request.method} ${request.url} not found` });
   });
 
+  await app.register(multipart, { limits: { fileSize: MAX_DOCUMENT_BYTES, files: 1 } });
+
   authRoutes(app);
+  controlRoutes(app);
+  await app.register(async (scope) => {
+    authGuard(scope);
+    claimRoutes(scope);
+    documentRoutes(scope);
+  });
   return app;
 }
