@@ -1,0 +1,1518 @@
+❯ /superpowers:brainstorming brainstorm about Partner Integration SDK, This is documentation file:'/Users/nampham/Projects/challenge_13/AI_Challenge_13.md'
+
+  Listed 1 directory
+
+This is a new project in an empty repo (only the challenge doc), so I'm treating it as architectural: clarifying questions, a few approaches, a design in sections, then a written spec for you to review before any code.
+
+My understanding so far
+
+From the doc:
+- Deliverable: a TypeScript SDK for insurance partners (hospitals, brokers, corporates) to submit claims, upload documents and track status, plus a mock HTTP server to test against.
+- Mock server: 6 endpoints (auth, then create/get/list claims, then upload/list documents). It keeps data in memory, adds a 200–500ms delay, fails about 10% of requests with a 503, and returns 400s with errors per field.
+- SDK must have: validation before each request, automatic token refresh, retry with exponential backoff, typed errors (ValidationError, AuthError, NetworkError, ApiError), no any, upload progress, and onStatusChange.
+- Also required: a README with a quickstart, an API reference, 3 example scripts, and at least 20 unit tests.
+
+My assumptions (please correct any):
+- This is a challenge submission that will be judged, so clean design, correctness and a smooth "clone → run → see it work" matter more than production features like publishing to npm.
+- Partners only write code against the SDK. The mock server is just a test fixture.
+- onStatusChange will poll, since no webhook or websocket endpoint is listed. That means the mock server also needs some way to move claims between statuses on its own.
+
+First question: where will the SDK run?
+
+This decides how file upload and progress tracking work, because fetch can't report upload progress.
+
+- A) Node.js only. Files are a Buffer, a stream or a file path. Progress comes from counting bytes as the request body streams. This is the simplest option and fits server-side partner backends.
+- B) Node.js and browser (isomorphic). It also accepts File/Blob, and in the browser progress comes from XMLHttpRequest. This is closer to "partners embed it in their own applications", but there are two transport paths to build and test.
+- C) Browser first. Mainly for partner web frontends.
+
+I recommend B, but built behind a small transport interface. Node is the default and the one we test fully. The browser adapter is thin. That fits "embed in their apps" without doubling the work. Which do you prefer?
+
+✻ Worked for 14s · done 10:50 PM
+
+❯ a
+
+Node.js only it is. Files will be accepted as Buffer, Readable stream or file path, and progress will come from counting bytes as the request body streams.
+
+Question 2: dependencies and tooling
+
+This choice shapes the whole codebase, so here are three options.
+
+- A) Zero runtime dependencies. The SDK uses Node 18+ built-ins only: fetch/undici or node:http, plus hand-written validation. The mock server uses node:http. Dev tools are TypeScript, Vitest and tsup for building. Partners install nothing extra, and an SDK with no dependencies looks good to judges.
+- B) Minimal dependencies with good returns. The SDK uses zod, so one schema gives both the validation and the TypeScript types. The mock server uses express or fastify with multer for file uploads. Dev tools are the same as A. This is less code, but partners pull in a dependency.
+- C) Mixed. The SDK has zero dependencies, and the mock server is free to use fastify plus multipart parsing, since partners never install it.
+
+I recommend C. The SDK stays lean: hand-written validators are small for 6 fields, and node:http gives us byte-level upload progress, which fetch doesn't. The mock server, which is test code, gets mature multipart handling for free. Which would you like?
+
+✻ Baked for 10s · done 11:00 PM
+
+❯ C
+
+C it is: zero runtime dependencies in the SDK, and fastify with multipart parsing for the mock server.
+
+Question 3: how claims change status on the mock server
+
+onStatusChange and example script #3 (polling) only show something useful if claims actually move through statuses. Here is the lifecycle I'd propose:
+
+SUBMITTED → UNDER_REVIEW → APPROVED | REJECTED (with PENDING used as the initial status, if you'd rather match the doc's status: 'PENDING' example)
+
+How should a claim move between statuses?
+
+- A) Automatically over time. Each claim moves to the next status after a configurable interval, for example every 5s, and ends at APPROVED or REJECTED at random. Examples work out of the box, and tests can set the interval close to 0.
+- B) A control endpoint for tests and demos. For example, POST /__mock/claims/:id/status forces a transition. This is deterministic but needs a manual step in the demo.
+- C) Both. Automatic progression by default, plus the control endpoint for deterministic tests.
+
+I recommend A, with the timing set in the mock server's config. It keeps the 6 endpoints from the spec untouched, and the SDK tests won't depend on it anyway: unit tests will stub the transport or use a server with a fixed seed.
+
+One more decision you can override: the server's random behaviour (the 10% 503 rate, the 200–500ms delays, approve vs reject) will all be configurable and seedable, so tests are deterministic. Which option for status changes?
+
+✻ Crunched for 8s · done 11:01 PM
+
+※ recap: We're designing a Node.js-only TypeScript SDK and a mock server for the insurance claims challenge, with zero SDK dependencies and Fastify for the mock. Next: choose how mock claims change status: automatically over time (my recommendation), a control endpoint, or both. (disable recaps in /config)
+
+❯ Claim's statuses:
+  SUBMITTED->DOCUMENTS_VERIFIED->UNDER_ASSESSMENT->PENDING_INFO->APPROVED|REJECTED->PAYMENT_INITIATED->CLOSED
+  Option B, howerver, i want polling for claim status updates script, which should only stop when i press ctrl+c. I will manually trigger the API calls to update the claim status.
+
+──────────────────────────────────────────────────── 1 new message ────────────────────────────────────────────────────
+
+Got it. There will be a control endpoint, for example PATCH /__mock/claims/:id/status, that you call by hand with curl or Postman. Example #3 will poll and keep running until you press Ctrl+C. In SDK terms, onStatusChange returns an unsubscribe() function and polls until it's called, and the script just wires it to SIGINT.
+
+Question 4: transition rules for your lifecycle
+
+Your sequence raises two questions. Is PENDING_INFO a step every claim goes through, or only some? And does REJECTED also go to PAYMENT_INITIATED? Here are three ways to set the rules:
+
+- A) Strictly linear, as written. Every claim passes through every status, in order. REJECTED would go to PAYMENT_INITIATED, which seems odd.
+- B) A realistic graph (recommended):
+SUBMITTED          → DOCUMENTS_VERIFIED
+DOCUMENTS_VERIFIED → UNDER_ASSESSMENT
+UNDER_ASSESSMENT   → PENDING_INFO | APPROVED | REJECTED
+PENDING_INFO       → UNDER_ASSESSMENT | APPROVED | REJECTED
+APPROVED           → PAYMENT_INITIATED
+PAYMENT_INITIATED  → CLOSED
+REJECTED           → CLOSED
+  The control endpoint returns 409 INVALID_TRANSITION for any move not in this graph. That error also shows the SDK surfacing an ApiError properly.
+- C) No rules. The control endpoint accepts any status. This is the most flexible for manual testing, but the lifecycle doesn't mean much.
+
+The SDK will also export a ClaimStatus union type and a TERMINAL_STATUSES constant. Is CLOSED the only terminal status? Polling won't stop on its own either way, because you stop it with Ctrl+C. Which rules should we use?
+
+✻ Sautéed for 12s · done 11:16 PM
+❯ B:
+  SUBMITTED          → DOCUMENTS_VERIFIED
+  DOCUMENTS_VERIFIED → UNDER_ASSESSMENT
+  UNDER_ASSESSMENT   → PENDING_INFO | APPROVED | REJECTED
+  PENDING_INFO       → DOCUMENTS_VERIFIED
+  APPROVED           → PAYMENT_INITIATED
+  PAYMENT_INITIATED  → CLOSED
+  REJECTED           → CLOSED
+
+Locked in. PENDING_INFO → DOCUMENTS_VERIFIED makes sense: when more information is requested, the new documents get verified again. CLOSED is the only terminal status.
+
+Question 5: validation rules (client and server share them)
+
+The doc leaves the field rules open. Here's what I'd propose:
+
+┌───────────────┬──────────────────────────────────────────────────────────────────────┐
+│     Field     │                                 Rule                                 │
+├───────────────┼──────────────────────────────────────────────────────────────────────┤
+│ policyId      │ required, ^POL-\d+$                                                  │
+├───────────────┼──────────────────────────────────────────────────────────────────────┤
+│ claimType     │ required, one of OUTPATIENT, INPATIENT, DENTAL, MATERNITY, EMERGENCY │
+├───────────────┼──────────────────────────────────────────────────────────────────────┤
+│ diagnosisCode │ required, ICD-10 format ^[A-Z]\d{2}(\.\d{1,4})?$ (e.g. J06.9)        │
+├───────────────┼──────────────────────────────────────────────────────────────────────┤
+│ treatmentDate │ required, real calendar date in YYYY-MM-DD format, not in the future │
+├───────────────┼──────────────────────────────────────────────────────────────────────┤
+│ amount        │ required, finite number > 0, at most 2 decimal places                │
+├───────────────┼──────────────────────────────────────────────────────────────────────┤
+│ currency      │ required, one of THB, USD, VND, SGD (ISO 4217)                       │
+└───────────────┴──────────────────────────────────────────────────────────────────────┘
+
+Document uploads:
+- type is one of medical_receipt, medical_report, prescription, id_card, other.
+- Accepted MIME types are PDF, JPEG and PNG.
+- The maximum file size is 10 MB, checked on the client before any bytes are sent.
+
+Error format: ValidationError.fields maps each field to a message string, matching the doc ({ amount: 'must be positive' }). The server's 400 response uses the same structure, so both sides produce the same error.
+
+Do these rules work, or do you want to change any of the enums or limits, for example a different claim type or currency list?
+
+✻ Cooked for 8s · done 11:24 PM
+
+❯ looks fine, go ahead
+
+These are settled. Now the overall shape. There are two structural choices, so here is my recommendation for each.
+
+Approach: repo layout
+
+- A) npm workspaces monorepo (recommended).
+packages/sdk/          → @insurance/partner-sdk (zero deps, published shape)
+packages/mock-server/  → fastify, depends on sdk via workspace
+examples/              → 3 scripts, run with tsx
+  The mock server imports the validators and enums from the SDK, so the rules exist in one place and the client and server can never disagree. The packages are separated the way they would be in real life.
+- B) A single package with src/sdk and src/mock-server. It's simpler, but the line between the two is blurred, and it's easy to accidentally leak fastify types into the SDK.
+- C) Two separate repos. This is overkill for a challenge.
+
+Approach: SDK internals (the HTTP pipeline)
+
+- A) Layered pipeline (recommended). Each layer is small and can be tested on its own:
+Resource (claims/documents) → validate input
+  → HttpClient.request()
+      → RetryPolicy     (503/network → backoff + jitter, max 3)
+      → AuthManager     (get token, refresh on expiry / single 401 retry,
+                         dedupes concurrent refreshes)
+      → Transport       (node:http/https, timeout, byte-counting upload stream)
+  → error mapper → ValidationError | AuthError | NetworkError | ApiError
+  Transport is an interface, so unit tests swap in a fake. That makes them fast and deterministic, with no real server needed.
+- B) One monolithic HttpClient class that handles retry, auth and transport in one method. There are fewer files, but it's hard to test retry and auth separately.
+- C) Middleware chain, Koa style, with use(fn). It's very flexible, but that's speculative generality we don't need (YAGNI).
+
+Tests: most unit tests run against a fake transport. A small integration suite boots the real mock server with the chaos settings turned off, or seeded.
+
+Are you happy with monorepo A + pipeline A? If so, I'll move on to presenting the design section by section.
+
+✻ Crunched for 11s · done 11:26 PM
+
+❯ Monorepo
+  SDK internals: explain the structure of the SDK
+
+Monorepo it is. Here's the SDK structure in detail. This is design section 1.
+
+SDK structure (packages/sdk/src)
+
+index.ts                  ← public exports only
+InsuranceSDK.ts           ← entry point; wires everything together
+config.ts                 ← options, defaults, environment → baseUrl
+types.ts                  ← public types: Claim, ClaimStatus, CreateClaimInput, Page<T>, Document…
+errors.ts                 ← SDKError base + 4 typed errors
+validation/
+  rules.ts                ← enums + regexes (shared with mock server)
+  validateClaim.ts        ← CreateClaimInput → fields map or ok
+  validateDocument.ts     ← type / mime / size checks
+http/
+  Transport.ts            ← interface + NodeTransport (node:http/https)
+  AuthManager.ts          ← token lifecycle
+  RetryPolicy.ts          ← backoff decisions
+  HttpClient.ts           ← composes auth + retry + transport + error mapping
+resources/
+  ClaimsResource.ts       ← create / get / list / onStatusChange
+  DocumentsResource.ts    ← upload / list
+  StatusPoller.ts         ← polling engine behind onStatusChange
+
+What each unit does
+
+InsuranceSDK is the only class partners construct. It resolves the config, builds a single HttpClient, and exposes sdk.claims and sdk.documents. It contains no logic of its own.
+
+config.ts maps environment to a base URL (sandbox → http://localhost:4000 by default, or overridden with baseUrl; production → a placeholder URL). It applies the defaults (timeout: 30000, maxRetries: 3) and fails fast if apiKey is missing or malformed.
+
+Transport (interface) is the only code that touches the network.
+interface Transport {
+  send(req: TransportRequest): Promise<TransportResponse>;
+}
+// TransportRequest: method, url, headers, body (JSON string | multipart stream),
+//                   timeoutMs, onUploadProgress?(sentBytes, totalBytes)
+NodeTransport uses node:http/https. It builds the multipart body as a stream and counts bytes as they're written, which is what makes upload progress possible. Socket errors and timeouts become NetworkError. HTTP status codes are passed through untouched, because interpreting them is someone else's job.
+
+AuthManager owns the JWT.
+- getToken() returns the cached token if it's still valid with a 60s safety margin. Otherwise it calls POST /auth/token.
+- If several requests arrive while a refresh is in progress, they share one in-flight promise, so there's never more than one refresh at a time.
+- invalidate() is called when a request gets a 401. The request is then retried once with a new token. A second 401, or an invalid API key, throws AuthError.
+
+RetryPolicy is pure logic with no I/O:
+shouldRetry(error|status, attempt) and delayFor(attempt) → min(base · 2^attempt, cap) + jitter. It retries on 503 and NetworkError only. It never retries 400, 401, 404 or 409. The sleep function is injectable, so tests don't actually wait.
+
+HttpClient is the single request<T>() method that wraps the layers in order: retry loop → attach token → transport → map the status. The error mapper turns 400 into ValidationError(fields), 401/403 into AuthError, and any other non-2xx into ApiError(status, code, message).
+
+validation/ contains pure functions returning { ok: true } | { ok: false, fields }. The resources call them before any request goes out. The mock server imports the same rules.ts, so both sides apply identical rules.
+
+ClaimsResource / DocumentsResource are thin. Each one validates, calls http.request, and returns typed results. documents.upload accepts a Buffer | Readable | string (path), works out the size and MIME type, and converts byte progress into onProgress(percent).
+
+StatusPoller: onStatusChange(id, cb, { intervalMs = 5000 }) fetches the claim at each interval and calls cb(newStatus, claim) only when the status has changed. It returns unsubscribe(). Transient errors during polling are retried internally and don't stop the polling. An onError option reports any errors that remain after the retries.
+
+Request flow example: claims.create(input)
+
+validateClaim(input) ──fail──▶ throw ValidationError (no network)
+        │ok
+HttpClient.request(POST /claims)
+  attempt 1: token ✓ → transport → 503  → RetryPolicy: wait ~200ms
+  attempt 2: token expired → refresh → transport → 201 ✓
+        ▼
+return Claim (typed)
+
+Errors (errors.ts)
+
+SDKError is the base class, with code and requestId?. ValidationError adds fields. AuthError. NetworkError adds cause and retryable. ApiError adds status and body. Every error sets name correctly, and instanceof keeps working after transpiling.
+
+Does this structure look right? Once it's confirmed, I'll go on to section 2, the mock server.
+
+✻ Churned for 19s · done 11:33 PM
+
+❯ looks fine, go ahead
+
+──────────────────────────────────────────────────── 1 new message ────────────────────────────────────────────────────
+
+Section 2: Mock server (packages/mock-server/src)
+
+server.ts            ← buildServer(config) → fastify instance; start on :4000
+config.ts            ← port, jwtTtlSec, failureRate, delayMs [min,max], seed, apiKeys
+store.ts             ← in-memory Maps: claims, documents; id generators
+auth/jwt.ts          ← sign/verify HS256 JWT via node:crypto (no jsonwebtoken dep)
+plugins/
+  chaos.ts           ← onRequest hook: random delay + ~10% 503 (skips /__mock/*)
+  authGuard.ts       ← preHandler: require valid, unexpired Bearer token
+routes/
+  auth.ts            ← POST /api/v1/auth/token
+  claims.ts          ← POST, GET :id, GET list
+  documents.ts       ← POST upload (multipart), GET list
+  control.ts         ← PATCH /__mock/claims/:id/status, POST /__mock/reset
+lifecycle.ts         ← transition graph + canTransition(from, to)
+
+Behaviour:
+- Auth. POST /auth/token {apiKey} returns { accessToken, expiresIn: 3600 }. Keys must match pk_test_* (or be in a list in the config). A missing, malformed or expired token gets 401 { code: 'TOKEN_EXPIRED' | 'UNAUTHORIZED' }. jwtTtlSec can be configured, so you can see a token expire in a few seconds during a demo.
+- Validation. Requests are checked with the SDK's shared rules.ts. Failures get 400 { code: 'VALIDATION_ERROR', fields: {...} }.
+- Claims. IDs look like CLM-0001. New claims start as SUBMITTED, and each one keeps a statusHistory[] with timestamps. The list endpoint supports ?status=&page=&pageSize= (pageSize capped at 100) and returns { data, page, pageSize, total, totalPages }.
+- Documents. Uploads go through @fastify/multipart, which enforces the 10 MB limit and the MIME whitelist again on the server. Only metadata is stored (id, type, filename, size, mime, uploadedAt), and the file content is discarded. A 404 is returned if the claim doesn't exist.
+- Control endpoints. These skip auth and chaos. PATCH /__mock/claims/:id/status { status, note? } returns 409 INVALID_TRANSITION with the allowed next statuses, or 200 with the updated claim. POST /__mock/reset clears the store.
+- Chaos. By default the delay is 200–500ms and the 503 rate is 10%. Setting CHAOS=off or seed (from env or config) makes it deterministic for integration tests.
+- Run it with npm run mock (via tsx). It logs the base URL and a sample curl command for changing a status.
+
+Does this look right? Next is section 3: testing, docs and examples.
+
+✻ Cooked for 11s · done 11:34 PM
+❯ I want to store api key in environment variables for the development.
+
+Good call. Here's how that fits in:
+
+- .env.example is committed. .env is git-ignored.
+# SDK / examples
+INSURANCE_API_KEY=pk_test_dev_123
+INSURANCE_BASE_URL=http://localhost:4000
+# Mock server
+MOCK_API_KEYS=pk_test_dev_123,pk_test_partner_b
+MOCK_PORT=4000
+MOCK_JWT_TTL_SEC=3600
+MOCK_JWT_SECRET=dev-secret-change-me
+CHAOS=on
+- Loading: Node's built-in --env-file=.env (Node ≥ 20.6) loads the file, so there's no dotenv dependency. The npm scripts pass it, e.g. tsx --env-file=.env examples/01-simple-claim.ts.
+- Mock server: it accepts only the keys listed in MOCK_API_KEYS and otherwise returns 401 INVALID_API_KEY. The JWT secret, TTL, port and chaos settings also come from env, and the config file holds the defaults.
+- SDK: apiKey falls back to process.env.INSURANCE_API_KEY when it isn't passed, and baseUrl falls back to INSURANCE_BASE_URL. An explicit option always wins. If neither is set, the SDK throws a clear AuthError('apiKey missing: pass apiKey or set INSURANCE_API_KEY'). The examples call new InsuranceSDK({ environment: 'sandbox' }) with no key in the code.
+- Safety: the key is never logged, and errors show it masked, e.g. pk_test_****123.
+
+If you'd rather the SDK stayed strict and never read env itself, so the examples pass process.env.INSURANCE_API_KEY explicitly, that's a one-line change. Otherwise I'll keep the fallback.
+
+Section 3: Testing, docs and examples
+
+Tests (Vitest), at least 20 and probably about 35:
+- Unit tests (fake transport, fake clock and sleep):
+  - Validation: each field's rule, plus missing fields and bad formats.
+  - RetryPolicy: delays, the retry/no-retry decision for each status.
+  - AuthManager: caching, refresh before expiry, concurrent requests sharing one refresh, retry on 401, bad key → AuthError.
+  - HttpClient: status → error mapping for each error type; 503 → 503 → 200 succeeds; giving up after max retries → ApiError/NetworkError.
+  - Resources: create, get and list (query string), upload with progress (percent increases and ends at 100), and StatusPoller (fires only on change, unsubscribe stops it).
+- Integration tests: boot buildServer({ chaos: off }) on a random port and run the full flow: token → create → upload → control-transition → poll detects the change. One test with a seeded failure rate shows retries against the real server.
+- npm test runs everything. tsc --noEmit with strict plus an ESLint no-explicit-any rule enforces the "no any" requirement.
+
+Examples (examples/):
+1. 01-simple-claim.ts: create a claim, print it, and show ValidationError handling for a bad input.
+2. 02-claim-with-documents.ts: create a claim, upload a bundled sample PDF with a progress bar, then list its documents.
+3. 03-poll-status.ts <claimId?>: creates a claim if no ID is given and prints the curl command to change its status. It then polls with onStatusChange and logs each transition with timestamps. On Ctrl+C it unsubscribes and exits cleanly.
+
+Docs:
+- The root README.md covers the quickstart (install → cp .env.example .env → npm run mock → run example 1), the architecture diagram, the status lifecycle diagram, and the mock control endpoints.
+- packages/sdk/README.md has the API reference: every public method, its options, return types and the errors it throws, plus the error-handling guide.
+- TSDoc comments on the public API give accurate IDE hints.
+
+Toolchain: TypeScript 5 (strict), tsup (ESM + CJS + .d.ts), Vitest, tsx, Node ≥ 20.6.
+
+Does this section look right, along with the env handling? If so, I'll write the spec to docs/superpowers/specs/2026-10-26-partner-integration-sdk-design.md and run git init so it can be committed.
+
+✻ Cogitated for 18s · done Monday 11:37 PM
+
+❯ the SDK stayed strict, it must pass api key value explicitly.
+   02-claim-with-documents.ts: i want to pass a file path when run this script
+  packages/sdk/README.md: In addition to the API reference, I would like to have further guidance to help developers with the integration.
+
+Got it, I've noted all three changes. I'll write the spec now with them included.
+
+  Ran 1 shell command
+
+⏺ Write(docs/superpowers/specs/2026-10-26-partner-integration-sdk-design.md)
+Wrote 483 lines to docs/superpowers/specs/2026-10-26-partner-integration-sdk-design.md
+# Partner Integration SDK — Design Spec
+
+- **Date:** 2026-10-26
+- **Source requirements:** `AI_Challenge_13.md`
+- **Status:** Draft, awaiting review
+
+## 1. Goal and context
+
+Insurance partners (hospitals, brokers, corporates) need to submit claims, upload
+documents and track claim status from their own **server-side Node.js**
+… +474 lines
+
+  Ran 1 shell command
+
+I've written the spec to docs/superpowers/specs/2026-10-26-partner-integration-sdk-design.md and committed it. There was no git repo yet, so I ran git init first. Only the spec is committed; AI_Challenge_13.md, history.txt and .claude/ are still untracked.
+
+Your three changes:
+- Strict API key: the SDK never reads environment variables, and apiKey is a required option. The example scripts read INSURANCE_API_KEY from .env themselves and pass it in, and exit with a helpful message if it's missing. If the key is missing or malformed when the SDK is created, it throws a ValidationError.
+- Example 2: the file path is a required argument, e.g. npm run example:2 -- ./receipt.pdf medical_receipt. The document type is optional and defaults to medical_receipt. If the path is missing or the file doesn't exist, the script prints usage text pointing to a bundled sample PDF and exits with code 1.
+- SDK README: Part A is the API reference. Part B is an 11-topic integration guide:
+  - setup
+  - managing credentials
+  - environments
+  - submitting claims
+  - uploads
+  - tracking status
+  - pagination
+  - error-handling patterns
+  - testing against the mock server
+  - a go-live checklist
+  - troubleshooting
+
+Things I decided while writing the spec, so you can check them:
+- Retries for stream uploads: an upload from a stream can't be retried, because the stream can't be read twice. That also covers the retry after a 401, so the SDK fetches a fresh token before starting a stream upload. Uploads from a file path or Buffer are retried as normal.
+- Polling errors: onStatusChange keeps polling after transient errors. It stops only on an AuthError or a 404, and reports both through onError.
+- Request IDs: the mock server adds an x-request-id header to every response, and the SDK puts it on errors as requestId.
+- Production URL: it's a placeholder, https://api.insurance.example.com.
+- Out of scope: browser support, webhooks, publishing to npm and idempotency keys.
+
+Please review the spec and tell me if you want any changes before I write the implementation plan.
+
+✻ Worked for 1m 50s · done Monday 11:52 PM
+
+※ recap: We're designing the Partner Integration SDK and mock server for Challenge 13, and the design spec is written and committed. Next, please review it so I can write the implementation plan. (disable recaps in /config)
+
+❯ How does the SDK handle multiple simultaneous calls when the token has expired?
+
+The SDK uses single-flight refresh: however many calls run at once, at most one token request is in flight at a time. Writing this out turned up a gap in the spec, which I describe at the end.
+
+Case 1: the SDK already knows the token has expired
+
+AuthManager stores the token's expiresAt time. It treats a token as expired 60s before that, so expiry shouldn't happen mid-request.
+
+t=0  claims.get('A') ─┐
+t=0  claims.get('B') ─┼─▶ getToken(): cached token expired
+t=0  claims.list()  ─┘        │
+                              ├─ first caller: no refresh in flight
+                              │    → refreshPromise = POST /auth/token
+                              ├─ 2nd, 3rd callers: refreshPromise exists
+                              │    → await the same promise
+                              ▼
+                     1 token request → all 3 resume with the new token
+
+In code:
+
+getToken(): Promise<string> {
+  if (this.token && this.token.expiresAt - 60_000 > this.now()) return Promise.resolve(this.token.value);
+  this.refreshPromise ??= this.fetchToken().finally(() => { this.refreshPromise = undefined; });
+  return this.refreshPromise;
+}
+
+- If the refresh succeeds: every waiting call resumes with the same new token.
+- If it fails with a 503 or network error: the refresh is retried with backoff, and the waiting calls keep waiting on the same promise.
+- If the API key is invalid: every waiting call gets the same AuthError. finally clears the in-flight promise, so later calls can try again instead of being stuck with a cached failure.
+
+Case 2: the server rejects the token first (the gap)
+
+Sometimes the server returns 401 TOKEN_EXPIRED while the SDK still thinks the token is valid. That can happen through clock skew or a mock server restarted with a new secret. Here the spec currently says invalidate() "clears the cache", and that alone isn't safe:
+
+A, B, C all send with token T1 → all get 401
+A: invalidate() → refresh → T2 stored
+B: invalidate() → clears T2 (!) → refresh again → T3
+C: invalidate() → clears T3 (!) → refresh again → T4
+
+That's three refreshes when one would do, and the refreshes keep throwing away valid tokens.
+
+Proposed fix: compare the failed token before clearing anything. invalidate(failedToken) clears the cache only if the cached token is still the one that failed:
+
+invalidate(failedToken: string): void {
+  if (this.token?.value === failedToken) this.token = undefined;
+}
+
+Each request records which token it sent, and on a 401 calls invalidate(thatToken) and then getToken():
+- A: T1 is still cached, so A clears it and starts the single-flight refresh.
+- B and C: if T1 is still cached, they clear nothing and join A's refresh. If the new token T2 is already stored, invalidate does nothing and getToken() returns T2 straight away.
+- Result: one refresh, and A, B and C each retry once with T2. If that retry also gets a 401, the call throws AuthError. This keeps the existing "one re-authentication per request" rule, so it can't loop.
+
+Tests this adds
+
+- 3 concurrent calls with an expired token → exactly 1 call to /auth/token.
+- 3 concurrent calls that all get a 401 → exactly 1 refresh, and all 3 succeed on retry.
+- The refresh fails with an invalid API key → all 3 calls reject with AuthError, and the next call tries to refresh again.
+
+Should I add this to spec §4.3 (the invalidate(failedToken) comparison) and §9 (the three tests), and commit the change?
+
+✻ Worked for 17s · done 12:08 AM
+
+❯ yes, update the spec and commit
+
+The file changed on disk, so I'll re-read the relevant sections before editing.
+
+  Ran 2 shell commands
+
+I've updated the spec and committed it as 0559ef6.
+
+What changed:
+- §4.3 AuthManager: the single-flight refresh is now described exactly. All waiting calls share one result, whether that's the new token or an error, and a failed refresh is never cached. invalidate() became invalidate(failedToken), which clears the cache only if the cached token is still the one that failed. The code snippet is included.
+- §4.5 HttpClient: in the request loop, a 401 now calls auth.invalidate(token) with the token that request sent, and the next getToken() joins or starts the single refresh.
+- §9 Testing: I added a concurrency group with the three tests (expired cached token, simultaneous 401s, refresh failing with an invalid API key). The test target is now about 38.
+
+Is there anything else in the spec you want to question or change? If not, say so and I'll write the implementation plan.
+
+✻ Sautéed for 27s · done 12:17 AM
+
+❯ looks fine, go ahead with the implementation plan
+Successfully loaded skill
+
+I'm using the executing-plans skill to implement the plan inline. First I'll set up a feature branch and the workspace.
+
+  Ran 1 shell command
+
+⏺ Skill(superpowers:test-driven-development)
+Successfully loaded skill
+
+  Ran 2 shell commands
+
+Task 1: I'm scaffolding the workspace.
+
+  Ran 1 shell command
+
+Now the failing tests.
+
+  Ran 1 shell command
+
+RED for the expected reason, missing modules. Implementing now.
+
+  Ran 3 shell commands
+
+Task 2: validators. Writing the tests first.
+
+  Ran 2 shell commands
+
+The tests pass. Small refactor: I'm moving the shared helpers out of validateClaim.ts into
+their own checks.ts.
+
+  Ran 2 shell commands
+
+Task 3: RetryPolicy.
+
+  Ran 3 shell commands
+
+Task 4: Transport and multipart. Writing the tests against a real local HTTP server.
+
+  Ran 3 shell commands
+
+Task 5: AuthManager.
+
+  Ran 3 shell commands
+
+Task 6: HttpClient. First the fake transport helper and the tests.
+
+  Ran 3 shell commands
+
+Task 7: config, the SDK entry point, the claims resource and validateListParams (per the
+pre-flight ruling). Tests first.
+
+  Ran 2 shell commands
+
+The tests pass. Next, the build setup.
+
+  Ran 1 shell command
+
+The build works. I'm fixing the CJS types entry, then committing.
+
+  Ran 1 shell command
+
+Task 8: document uploads. Tests first.
+
+  Ran 2 shell commands
+
+That toStream helper at the bottom of uploadSource.ts is messy. I'm cleaning it up before
+wiring.
+
+  Ran 2 shell commands
+
+Task 9: StatusPoller. Tests first, using fake timers.
+
+  Ran 3 shell commands
+
+Task 10: mock server foundation. Tests first.
+
+  Ran 2 shell commands
+
+The tests pass. Now the smoke run of npm run mock, to check that tsx resolves the SDK import.
+
+  Ran 2 shell commands
+
+Task 11: claims, documents and control routes. Test helpers and tests first.
+
+  Ran 1 shell command
+
+RED: 17 new tests fail because the routes don't exist yet. Implementing.
+
+  Ran 3 shell commands
+
+Task 12: integration tests. The upload test needs the sample PDF fixture, so I'm creating it
+here rather than in Task 13 (a ruling).
+
+  Ran 1 shell command
+
+All 7 integration checks pass as expected, so I'll log that in the ledger. I'll also fix the
+weak polling test assertion (waitFor(... not.toHaveBeenCalled)), replacing it with a real
+baseline check since it currently proves nothing.
+
+  Ran 1 shell command
+
+Task 13: example scripts.
+
+  Ran 1 shell command
+
+Bug spotted in example 3: claimId is assigned before the log, so it always prints "Watching".
+Fixing, then running every example against the mock server.
+
+  Ran 1 shell command
+
+Examples 1 and 2 behave as specified. One fix: the progress bar rounds 95% up to a full bar,
+so I'm switching it to Math.floor. Now example 3, with a SIGINT at the end.
+
+  Ran 1 shell command
+
+Example 3 revealed that with chaos enabled, the poller's first fetch lands after the initial
+curl, so its baseline is DOCUMENTS_VERIFIED and the printed transition SUBMITTED →
+UNDER_ASSESSMENT silently skips a step—polling can miss intermediate states even though
+statusHistory records them all. I'll update the example to print the full path from
+statusHistory so no steps stay hidden.
+
+  Ran 1 shell command
+
+Every step now shows up, including the ones that happened before the poller's first fetch.
+Committing Task 13.
+
+  Ran 1 shell command
+
+Task 14: documentation. First the root README.
+
+⏺ Write(README.md)
+Wrote 167 lines to README.md
+# Insurance Partner Integration SDK
+A TypeScript SDK that lets insurance partners (hospitals, brokers, corporates) su
+bmit claims, upload documents and track claim status from their own Node.js appli
+
+- **`@insurance/partner-sdk`** (`packages/sdk`): zero runtime dependencies, fully
+ntial backoff, typed errors, upload progress and status tracking. **[API referenc
+e and integration guide →](packages/sdk/README.md)**
+nting the claims API in memory, with simulated latency and transient failures.
+- **`examples/`**: three runnable integration scripts.
+## Quickstart
+… +179 lines
+
+Now the SDK README, Part A (API reference) and Part B (integration guide).
+
+⏺ Write(packages/sdk/README.md)
+Wrote 488 lines to packages/sdk/README.md
+# @insurance/partner-sdk
+
+ your Node.js application.
+
+- Zero runtime dependencies; Node.js 20.6 or later
+- Checks your input before sending it, so mistakes surface immediately with fiel
+d-level messages
+- Handles authentication for you: it exchanges your API key for a token and refr
+- Retries transient failures (HTTP 503, network errors) with exponential backoff
+- Reports upload progress and claim status changes
+… +623 lines
+
+Now the verification. I'll typecheck the guide's key snippets, then run the quickstart from a
+clean state.
+
+  Ran 1 shell command
+
+Found a real bug: with exactOptionalPropertyTypes enabled, list({ status: maybeUndefined })
+fails to compile since public option types don't accept explicit undefined. I'll add a
+type-level regression test (confirming the typecheck failure) before fixing the types.
+
+  Ran 2 shell commands
+
+GREEN. Now the quickstart, verbatim from a clean state.
+
+  Ran 1 shell command
+
+The zsh glob error aborted that rm, so the clean state wasn't real, and install=1 needs
+checking. Re-running properly.
+
+  Ran 1 shell command
+
+The quickstart works from a truly clean install. (The earlier install=1 came from zsh aborting
+the whole line.) Next, the full suite, lint, build, and a check on the npm audit warning.
+
+  Ran 1 shell command
+
+154 tests pass, and typecheck, lint and build are clean. The production dependency tree has 0
+vulnerabilities; the audit warnings are dev-only (vitest/esbuild). Committing Task 14.
+
+  Ran 1 shell command
+
+All 14 tasks are done. Next is the final whole-branch review. You chose Native, which includes one fresh reviewer on the most capable model, so I'm building the review package and dispatching it.
+
+  Read 1 file, ran 1 shell command
+
+──────────────────────────────────────── 1 new message ─────────────────────────────────────────
+
+⏺ Agent(Final whole-branch code review)
+Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+All 14 tasks are built and committed on branch feat/partner-sdk: 154 tests pass, and typecheck, lint and the build are all clean.
+
+A fresh reviewer on the most capable model is now checking the whole branch (045a122..2c7c7ab), as the Native option includes. When it reports back, I'll grade its findings by effect. Any Critical or Important issue gets fixed test-first, and minor ones go on a deferred list for you. After that I'll give you the full list of rulings I made.
+
+✻ Baked for 17m 47s · done 12:48 AM
+
+› Message from @general-purpose (ctrl+o to expand)
+
+The review is back: no Critical issues, 3 Important and 9 Minor. Here is how I'm grading them by their effect on a partner:
+
+- #1, async callback rejection: Important, fix. Copying the README's own example could crash a partner's server.
+- #2, file-descriptor leak on early responses: Important, fix. Long-running partner servers would eventually hit EMFILE, and every chaos 503 triggers the leak.
+- #3, retrying POSTs after a timeout: Important, fix. A hidden duplicate insurance claim inside a call that succeeded is a real business problem. The spec does say "retry network errors", but it didn't foresee this. I'll narrow retries to the safe case and record a ruling.
+- The 9 Minors: deferred to you, per the process. The one exception is the uncommitted lockfile drift, which is leftover housekeeping from my Task 14 reinstall rather than a fix.
+
+Starting the fix pass. Fix 1 (async callback), RED first:
+
+  Ran 1 shell command
+
+⏺ Agent "Final whole-branch code review" finished · 4m 43s
+
+The test timed out instead of failing on its assertion, because setImmediate is faked under fake timers. I'll switch to real timers for the final flush.
+
+  Ran 1 shell command
+
+RED for the right reason: onError is never called. Fixing in StatusPoller and updating the README's claim.
+
+  Ran 1 shell command
+
+GREEN. Running the whole suite, then committing fix 1.
+
+  Ran 1 shell command
+
+Fix 2, the fd leak. RED first: an upload whose server answers before reading the body must leave the source stream destroyed.
+
+  Ran 1 shell command
+
+Test confirms the bug: when the server responds early and closes the connection, the SDK mislabels it as NetworkError: write EPIPE instead of surfacing the real HTTP status, which would hide genuine 503/413 errors too. I'll fix this by stopping writes once a response arrives (destroying the source) and ignoring subsequent write errors.
+
+  Ran 1 shell command
+
+GREEN. The test checks the inner file stream, so the destroy does propagate through the multipart wrapper. Running the full suite, then committing.
+
+  Ran 1 shell command
+
+The commit succeeded, but lint flagged prefer-const on source. I'll declare it as const instead (safe since the multipart stream is lazy) and amend the unpushed commit.
+
+  Ran 1 shell command
+
+I'll make sure non-idempotent POST requests (like creating a claim or uploading) are only retried when the connection never actually reached the server, avoiding duplicate submissions, while GETs and token requests keep full retry logic. Writing tests for this first.
+
+  Ran 1 shell command
+
+RED, as expected: the three tests that pin down the new behaviour fail. Implementing it.
+
+  Ran 1 shell command
+
+GREEN. Now I'm updating the docs (and spec §4.4) to describe the narrowed retry rule.
+
+  Searched for 1 pattern, ran 1 shell command
+
+All three fixes are in, and the suite is at 160/160. Now the lockfile housekeeping and a final check.
+
+  Ran 2 shell commands
+
+The final review is resolved, so I'm deleting the plan's scratch workspace and my log files (git history is the record now). Then I'll move on to finishing the branch.
+
+  Searched for 1 pattern, ran 2 shell commands
+
+⏺ Skill(superpowers:finishing-a-development-branch)
+Successfully loaded skill
+
+I'm using the finishing-a-development-branch skill to complete this work.
+
+  Ran 1 shell command
+
+I've built the Partner Integration SDK, the mock server, the 3 example scripts and the docs on branch feat/partner-sdk (18 commits off main). All 160 tests pass, and typecheck, lint and the build are clean. I also ran the README quickstart from a fresh install, and it works.
+
+Final review: a fresh reviewer found no critical issues and three that mattered. I fixed all three, each with a test that failed first:
+- Async status callbacks: if a partner's async callback failed, the error escaped and would crash their Node.js process. The README's own example would have triggered it. Errors now go to onError instead.
+- Leaked file handles: when the server answered an upload before reading the whole file (a 503, 401, 404 or 413), the file stayed open. Long-running partner servers would eventually run out of file handles. While fixing it, I found that these early answers also showed up as a network error instead of the real HTTP status; that's fixed too.
+- Duplicate claims: if creating a claim timed out after the server had already saved it, the automatic retry created a second claim, and the call still looked successful. Claim creation and uploads are now retried after a network error only if the connection was never made. Otherwise the caller gets a NetworkError with requestSent: true. This narrows the spec's "retry network errors" rule, so I updated spec §4.4 to match.
+
+Other things I found while building:
+- Missed status steps: while running example 3, I found that polling can merge quick status changes. The example now prints every step from the claim's history.
+- Strict TypeScript callers: typechecking the README's own examples showed that partners using a strict TypeScript setting couldn't pass optional values that might be undefined. The public option types accept them now.
+Rulings I made (each with its cost if wrong):
+1. I worked on a branch in place instead of a separate worktree, since the repo was new. Cost: none.
+2. I added an exported validateListParams, so the SDK and the mock server check list filters with the same rules. Cost: one extra export.
+3. An upload file that can't be read gives NetworkError with retryable: false. Cost: a different error type for unreadable files.
+4. The SDK also rejects an unparsable baseUrl when it's created. Cost: none.
+5. The package exports separate type files for ESM and CommonJS users. Cost: none.
+6. Upload validation reports problems with the claim id, the file and the document type together in one error. Cost: message wording only.
+7. If a partner's onError handler itself throws, the SDK ignores it so polling keeps going. Cost: bugs in that handler go unnoticed.
+8. Every mock response carries x-request-id, including simulated 503s and 404s. Cost: none.
+9. Mock errors always use the { code, message } format, and the mock needs no extra plugin package. Cost: none.
+10. I added 2 tests for the mock server's environment settings. Cost: none.
+11. An upload with both a bad document type and a bad file type gets 400, not 415. Cost: a different status code in that rare case.
+12. The mock returns 404 for an unknown claim before reading the uploaded file. Cost: none.
+13. I created the sample PDF in Task 12 rather than Task 13, because the end-to-end test needs it. Cost: none.
+14. The end-to-end test for simulated failures uses a fixed random seed and up to 5 retries. Cost: none.
+15. Example 3 shows the full status path, not just old → new. Cost: none.
+16. Optional option fields accept explicit undefined. Cost: none.
+17. Claim creation and uploads aren't retried once the request may have reached the server. Cost: partners on flaky networks see a few more NetworkErrors.
+18. I agreed with the reviewer's five set-aside items. The main one: retrying a 503 is safe because the server rejected the request. Cost: low.
+
+Deferred minor findings:
+- Token lifetimes of 60 seconds or less make every request fetch a new token.
+- Spec §4.4 says the SDK should get a fresh token before a stream upload; this wasn't built.
+- A stream upload with a wrong declared size hangs until the timeout, or fails with a length error.
+- Example 3 says "will keep trying" even after errors that stop polling.
+- A successful response with a non-JSON body comes back as a string.
+- The environment check accepts names like 'toString'.
+- The mock server listens on all network interfaces, so its unauthenticated control routes are reachable from the local network.
+- Uploads accept Node's Readable, not the older NodeJS.ReadableStream type, so callers holding the older type need a cast.
+
+Not committed: AI_Challenge_13.md, history.txt and .claude/ are still untracked, as I left them.
+
+What would you like to do with the branch?
+
+1. Merge back to main locally
+2. Push and create a Pull Request (no git remote is set up yet, so I'd need its URL)
+3. Keep the branch as-is (I'll handle it later)
+
+Which option?
+❯ Token lifetimes of 60 seconds or less make every request fetch a new token
+  Explain the issue and propose a solution, i will review it before implementation
+
+  Searched for 2 patterns, ran 1 shell command
+
+The issue
+
+The SDK starts refreshing a token 60 seconds before it expires (packages/sdk/src/http/AuthManager.ts:8, :26):
+
+const REFRESH_MARGIN_MS = 60_000;
+if (this.token && this.token.expiresAt - REFRESH_MARGIN_MS > this.now()) return cached;
+
+That works for the 1-hour tokens the spec describes. But if the server issues a token that lives 60 seconds or less, the token is already inside the refresh window when it arrives. The cached token is never reused:
+
+┌─────────────────────────────────────────────────────────┬─────────────────────────────────────────────┐
+│                     Token lifetime                      │    How long the cached token gets reused    │
+├─────────────────────────────────────────────────────────┼─────────────────────────────────────────────┤
+│ 3600 s (default)                                        │ 3540 s                                      │
+├─────────────────────────────────────────────────────────┼─────────────────────────────────────────────┤
+│ 65 s (the value our README suggests for trying refresh) │ 5 s                                         │
+├─────────────────────────────────────────────────────────┼─────────────────────────────────────────────┤
+│ 60 s or less                                            │ never: every call fetches a new token first │
+└─────────────────────────────────────────────────────────┴─────────────────────────────────────────────┘
+
+What a partner sees:
+- Double the traffic: every API call costs two round trips (token, then the real request).
+- Double the latency: on the mock, each request waits for an extra 200–500 ms delay.
+- More random failures: with chaos on, each call has two chances to hit a 503 instead of one.
+- Still correct: requests succeed, so nothing visibly breaks. That's why I graded it Minor.
+
+The 60 seconds of headroom isn't needed for correctness anyway. If a token expires mid-request, the server answers 401, and the SDK already refreshes and retries once.
+
+Proposed fix
+
+Scale the margin with the token's lifetime: margin = the smaller of 60 seconds and 10% of the lifetime. Work out the refresh time once, when the token arrives.
+
+const MAX_REFRESH_MARGIN_MS = 60_000;
+const REFRESH_MARGIN_RATIO = 0.1;
+
+// in refresh():
+const lifetimeMs = expiresIn * 1000;
+const marginMs = Math.min(MAX_REFRESH_MARGIN_MS, lifetimeMs * REFRESH_MARGIN_RATIO);
+this.token = { value: accessToken, refreshAt: this.now() + lifetimeMs - marginMs };
+
+// in getToken():
+if (this.token && this.now() < this.token.refreshAt) return cached;
+
+┌────────────────────────┬──────────────────────┬─────────────────────────────┐
+│     Token lifetime     │        Margin        │         Reused for          │
+├────────────────────────┼──────────────────────┼─────────────────────────────┤
+│ 3600 s                 │ 60 s (same as today) │ 3540 s                      │
+├────────────────────────┼──────────────────────┼─────────────────────────────┤
+│ 65 s                   │ 6.5 s                │ 58.5 s                      │
+├────────────────────────┼──────────────────────┼─────────────────────────────┤
+│ 30 s                   │ 3 s                  │ 27 s                        │
+├────────────────────────┼──────────────────────┼─────────────────────────────┤
+│ 0, negative or invalid │ none                 │ never cached, same as today │
+└────────────────────────┴──────────────────────┴─────────────────────────────┘
+
+Why 10%:
+- What the margin covers: the margin only needs to cover the time a request spends in flight. Clock differences between the partner and the server don't matter, because the expiry time is measured on the partner's own clock from when the token arrives.
+- Why it's safe: 10% leaves a few seconds even for very short tokens, and the existing 401 retry covers anything that slips through.
+- No change by default: for the default 1-hour token, behavior stays exactly as it is now.
+- No new option: nothing changes in the SDK's public API.
+
+How I'd make the change (test first)
+
+New tests in packages/sdk/test/AuthManager.test.ts, using the injected clock:
+1. A 30 s token is reused 10 s later. This fails today.
+2. A 30 s token is refreshed once 27 s have passed.
+3. A 65 s token is reused at 50 s. This fails today.
+4. An expiresIn of 0 makes every call refresh, so a bad server value never leaves a token cached forever.
+5. The existing test "caches the token until 60s before expiry" stays as the check that 1-hour tokens behave as before.
+
+Docs to update:
+- Spec, line 216: "60 s" becomes "min(60 s, 10% of the token lifetime)", marked as an amendment.
+- packages/sdk/README.md:232: same wording change.
+- Root README, MOCK_JWT_TTL_SEC row: suggest a short TTL such as 30 to watch tokens refresh every ~27 s.
+
+It would be one commit on feat/partner-sdk, followed by a full suite, typecheck and lint run.
+
+One choice for you: I recommend 10%. A larger share, such as 20% or half the lifetime, refreshes earlier and fetches tokens more often, but gives more headroom on slow networks.
+
+I'll wait for your review before changing anything.
+
+✻ Cogitated for 52s · done 9:08 AM
+
+※ recap: You're finishing the Partner Integration SDK branch, and I've proposed a fix so tokens that live 60 seconds or less get reused instead of refetched on every call. Next, review the proposal and tell me to go ahead or pick a different share than 10%.
+
+❯ ok, implement it
+
+  Ran 1 shell command
+
+Writing the failing tests first.
+
+  Ran 1 shell command
+
+The three new tests fail as expected. The expiresIn: 0 test passes already, since it's there to stop the fix from caching such tokens. Now the fix:
+
+  Ran 1 shell command
+
+All 164 tests pass, and typecheck and lint are clean. Committing:
+
+  Ran 1 shell command
+
+Short-lived tokens are now reused instead of being fetched again on every request. The fix is committed as c84c9ec on feat/partner-sdk. All 164 tests pass (160 before, plus 4 new), and typecheck and lint are clean.
+
+What changed:
+- The fix (packages/sdk/src/http/AuthManager.ts): the SDK now refreshes early by 10% of the token's lifetime, capped at 60 seconds. It works out the refresh time once, when the token arrives. 1-hour tokens behave exactly as before: they still refresh 60 seconds early.
+- Tests (packages/sdk/test/AuthManager.test.ts):
+  - Failed before the fix, pass now: a 30 s token is reused 10 s later, a 30 s token is refreshed once 27 s have passed, and a 65 s token is reused 50 s later.
+  - Already passed before the fix: a token with expiresIn: 0 is never cached. It guards against the fix ever caching such a token forever. If the server sends an invalid value, the SDK just fetches a new token each time, as it did before.
+- Docs:
+  - Spec §4.3 now gives the new rule and is marked as an amendment.
+  - The SDK README describes the new refresh timing.
+  - The root README now suggests MOCK_JWT_TTL_SEC=30 (instead of 65) for watching tokens refresh, about every 27 s.
+
+I didn't run it by hand against the mock server; the unit tests use a fake clock.
+
+The branch is otherwise unchanged and still waiting on your choice: merge to main, push and open a PR, or keep it as-is.
+❯ Spec §4.4 says the SDK should get a fresh token before a stream upload; this wasn't built.
+  Explain the issue and propose a solution, i will review it before implementation
+
+  Searched for 1 pattern, ran 1 shell command
+
+The issue
+
+Spec §4.4 (lines 250–252) says:
+
+▎ Uploads from a non-replayable stream source are not retried, including the 401 re-auth retry… The SDK obtains a fresh token before starting a stream upload to minimise this.
+
+The first half is built. The second half isn't. In HttpClient.request (packages/sdk/src/http/HttpClient.ts:68), a stream upload takes the cached token like any other request.
+
+Why it matters for streams:
+- The usual safety net doesn't apply. For other requests, if the server rejects the token with a 401, the SDK fetches a new token and resends the request (line 84). A stream upload can't be resent, so a 401 goes straight to the caller as an AuthError.
+- The partner can't retry either. When the server answers early, the SDK destroys the source stream. To try again, the partner has to open the stream again (for example, from object storage).
+
+When this happens in practice:
+- Expiry: the cache already refreshes before tokens expire on our clock, and the server checks the token when the upload arrives, not when it finishes. So an expiring token isn't the realistic cause.
+- The real gap: the server stops accepting a token the SDK still thinks is valid. Examples: the server restarts with a new signing secret, revokes tokens, or rotates keys. A long-running partner process that holds a token for up to an hour is exposed to all of these.
+
+It's a narrow case, but when it happens the upload fails in a way the partner can't simply retry.
+
+Proposed fix
+
+Before a stream upload, always fetch a new token instead of using the cached one. Then the token is only milliseconds old when the upload starts.
+
+1. AuthManager.getToken({ forceRefresh?: boolean }):
+   - With forceRefresh: true, skip the cache and refresh.
+   - It goes through the existing single-flight logic. If a refresh is already running, the call joins it, so 5 stream uploads at once still cost 1 token request.
+   - Requests already using the old token are unaffected, because that token stays valid.
+2. HttpClient.request: if the body is a non-replayable multipart (only stream uploads), call getToken({ forceRefresh: true }). Paths and Buffers keep using the cache, since they can already re-authenticate after a 401.
+3. Order matters: the token is fetched before the stream is read. If the token request fails, it's retried like any token request. If it still fails, the upload is never sent and the stream is left unread, so the partner can retry with the same stream.
+
+Cost: one extra token round trip per stream upload, about 200–500 ms on the mock. Uploads from file paths and Buffers don't change.
+
+What it doesn't fix: a stream upload that hits a chaos 503 still fails without a retry. That's by design (the stream can't be replayed), and the README already says to buffer the stream or write it to a temp file if you need retries.
+
+Tests (each fails first)
+
+In packages/sdk/test/HttpClient.test.ts, using fakeTransport:
+1. A stream upload with a valid cached token still requests a new token before the upload.
+2. A Buffer upload with a valid cached token doesn't request a new token (a regression guard).
+3. Two stream uploads at once trigger exactly one token request.
+4. If the token request fails, the upload is never sent and the stream isn't read.
+
+In packages/sdk/test/AuthManager.test.ts:
+
+5. forceRefresh skips a valid cached token and joins a refresh that's already in flight.
+
+Docs
+
+- Spec §4.4: the sentence stays. I'd add one clause saying "fresh" means a forced refresh shared with any refresh already in flight.
+- packages/sdk/README.md:307: add "Stream uploads start with a freshly issued token, so a token the server has already revoked can't fail them."
+
+Alternative
+
+Drop the sentence from the spec and don't build this. That's reasonable given how narrow the case is, and it saves the extra round trip. I still recommend building it: the spec promises it, it's about 10 lines of code, and the failure it prevents is one the partner can't recover from by retrying.
+
+Which way would you like to go? I'll wait for your review before changing anything.
+✻ Worked for 40s · done 9:19 AM
+
+※ recap: We're working through the Partner SDK's deferred review findings, and I've proposed fetching a fresh token before each stream upload. Next, you review that proposal and approve it, ask for changes, or choose to drop the spec sentence instead.
+
+❯ ok, implement it
+
+  Ran 2 shell commands
+
+──────────────────────────────────────────────────────────────────────────────────────────────── 3 new messages ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+Writing the failing tests first:
+
+  Ran 1 shell command
+
+Four tests fail as expected. The other two already pass because they guard existing behavior: joining an in-flight refresh, and reusing the cache for Buffer and path uploads. Now the implementation:
+
+  Ran 3 shell commands
+
+Stream uploads now always start with a newly issued token, as spec §4.4 promised. The fix is committed as b3e253d on feat/partner-sdk. All 170 tests pass, and typecheck, lint and build are clean.
+
+What changed:
+- packages/sdk/src/http/AuthManager.ts: getToken({ forceRefresh: true }) skips the cached token. If a refresh is already running, it joins that one instead of starting another.
+- packages/sdk/src/http/HttpClient.ts: stream uploads call getToken({ forceRefresh: true }). The token is fetched before the stream is read. Uploads from file paths and Buffers still use the cached token, since they can still re-authenticate and resend after a 401.
+
+Tests (6 new):
+- Failed before the fix, pass now:
+  - forceRefresh skips a valid cached token.
+  - A stream upload fetches a new token even when the cached one is still valid.
+  - Two stream uploads at the same time fetch one token for both, not one each.
+  - If the new token can't be fetched, the upload isn't sent and the stream is never opened, so the caller can retry with the same stream.
+- Already passed before the fix:
+  - forceRefresh joins a refresh that's already running.
+  - Uploads from file paths and Buffers keep using the cached token.
+
+Docs:
+- Spec §4.4: now says how the fresh token is fetched and that a failed token request leaves the stream untouched.
+- packages/sdk/README.md: the Retries section says stream uploads start with a new token, and that the stream stays unread if that token request fails.
+
+I didn't run a stream upload by hand against the mock server; the new tests use the fake transport.
+
+Six deferred findings are left. The next is the stream upload with a wrong declared size, which hangs or fails. The branch is still waiting on your choice: merge to main, push and open a PR, or keep it as-is.
+✻ Baked for 1m 7s · done 9:38 AM
+
+❯  A stream upload with a wrong declared size hangs until the timeout, or fails with a length error.
+  Explain the issue and propose a solution, i will review it before implementation
+
+  Ran 1 shell command
+
+I'll check what actually happens today before proposing anything. I'm running the mock with chaos off and uploading a stream with a wrong declared size.
+
+  Searched for 1 pattern, ran 3 shell commands
+
+The issue
+
+For a stream upload, the SDK can't know the file's length in advance, so the partner passes size. The SDK uses that number as the request's Content-Length, which tells the server how many bytes to expect. Nothing checks it against the bytes the stream actually produces.
+
+I ran a 1000-byte stream against the mock server (chaos off, 4 s timeout):
+
+┌──────────────────┬───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│  Declared size   │                                                                                 What happened                                                                                 │
+├──────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 1000 (correct)   │ OK, 5 ms                                                                                                                                                                      │
+├──────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 500 (too small)  │ Hung for the whole timeout, then NetworkError TIMEOUT                                                                                                                         │
+├──────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 2000 (too large) │ "OK", but only by luck: the mock answers once it reads the end of the form. A real server or proxy that trusts Content-Length would wait for the 1000 missing bytes and hang. │
+└──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+What a partner gets:
+- A misleading error. A wrong size comes back as a network timeout (30 s by default) with requestSent: true. That says "the server may have stored this", which sends the partner looking at their network instead of their own input.
+- Wrong progress. Progress reports go past 100% or stop early.
+- A bypassed size limit. The 10 MB check runs on the declared size. A stream that declares 1 MB but sends 50 MB passes it, so only the server can catch it.
+- Changing files. The same thing can happen with a file path, if the file changes size between the SDK checking its size and reading it (for example, a file still being written).
+
+Proposed fix
+
+Count the file's bytes while they're sent, and stop the upload the moment they don't match the declared size. The check goes in buildMultipart (packages/sdk/src/http/multipart.ts), so it covers streams, paths and Buffers.
+
+let received = 0;
+for await (const chunk of file.open()) {
+  received += chunk.length;
+  if (received > file.size) throw sizeMismatch(file.size, 'more');   // before sending the extra bytes
+  yield chunk;
+}
+if (received < file.size) throw sizeMismatch(file.size, received);    // before the end of the form
+yield epilogue;
+
+1. Error type: throw ValidationError with fields.size, for example "declared 500 bytes, but the stream provided more" or "declared 2000 bytes, but the stream provided 1000". A wrong size is the caller's input error, not a network fault, and partners already handle ValidationError field by field.
+2. Transport (packages/sdk/src/http/Transport.ts:135): when the source stream fails with an SDKError, pass that error through instead of wrapping it in NetworkError. The request is aborted as it is today.
+3. No retries: ValidationError is never retried, which is correct for both bad input and a file that changed.
+4. No partial document: the upload is aborted before the end of the form is sent, so the server never receives a complete form and stores nothing. The partner can safely fix size and upload again. I'll check this against the mock server in an end-to-end test.
+
+What the partner gets instead: an immediate ValidationError naming the mismatch, instead of a 30 s timeout. Progress can never pass 100%, and a stream can't send more than the 10 MB limit, because sending stops at the declared size.
+
+Tests (each fails first)
+
+1. buildMultipart, too few bytes: the body stream fails with ValidationError (fields.size) after the file bytes and before the end of the form.
+2. buildMultipart, too many bytes: it fails with no bytes beyond the declared size emitted.
+3. buildMultipart, exact size: the body is unchanged (a regression guard).
+4. NodeTransport with a real local HTTP server: a too-short stream rejects with ValidationError well before the timeout.
+5. End-to-end against the mock server: a wrong size gives ValidationError, and documents.list(claimId) is still empty afterwards.
+
+Docs
+
+- packages/sdk/README.md: in the uploads section, size must be the stream's exact byte count. A mismatch throws ValidationError (fields.size) and nothing is stored.
+- Spec, upload section: add the same rule.
+
+One choice for you: I recommend ValidationError. The alternative is a NetworkError with retryable: false, like an unreadable file gets today. That's closer to "something went wrong mid-request", but it's harder for partners to tell apart from real network problems.
+
+I'll wait for your review before changing anything.
+
+✻ Sautéed for 1m 23s · done 9:42 AM
+
+※ recap: I'm working through the SDK's deferred review findings, and right now it's stream uploads that hang when the declared size is wrong. Next, once you approve the proposal (throw a ValidationError when the size doesn't match), I'll implement it test-first.
+
+❯ ok. implement it
+
+  Ran 2 shell commands
+
+Writing the failing tests first: a new multipart.test.ts, one transport test and one end-to-end test.
+
+  Ran 1 shell command
+
+Four new tests fail as expected, but the fifth reveals an issue: a wrong-size upload leaves the reused keep-alive connection broken, causing the next request (onStatusChange) to fail with a socket hang up. I'll extend the fix to cover this connection-reuse problem too.
+
+  Ran 1 shell command
+
+All 20 targeted tests pass. Now the docs: the comment on the Transport interface, the README and the spec.
+
+  Ran 2 shell commands
+
+Everything passes. Re-running my earlier manual check against the mock server to confirm the real-world behavior:
+
+  Ran 2 shell commands
+
+A stream upload whose bytes don't match its declared size now fails right away with ValidationError, instead of hanging until the timeout. The fix is committed as a67fc28 on feat/partner-sdk. All 175 tests pass, and typecheck, lint and build are clean.
+
+Same check against the mock server, before and after:
+
+┌──────────────────────────────────────┬───────────────────────────────────────────────────────────────────┬──────────────────────────────────┐
+│ Declared size for a 1000-byte stream │                              Before                               │              After               │
+├──────────────────────────────────────┼───────────────────────────────────────────────────────────────────┼──────────────────────────────────┤
+│ 500                                  │ NetworkError TIMEOUT after the full timeout                       │ ValidationError { size } in 2 ms │
+├──────────────────────────────────────┼───────────────────────────────────────────────────────────────────┼──────────────────────────────────┤
+│ 2000                                 │ Looked successful, but only because of how the mock reads uploads │ ValidationError { size } in 2 ms │
+├──────────────────────────────────────┼───────────────────────────────────────────────────────────────────┼──────────────────────────────────┤
+│ 1000                                 │ OK                                                                │ OK, unchanged                    │
+└──────────────────────────────────────┴───────────────────────────────────────────────────────────────────┴──────────────────────────────────┘
+
+A second bug the tests exposed: after a wrong-size upload, the next request failed with socket hang up. The bad upload had broken the connection Node reuses for later requests. The fix covers this: on a mismatch the SDK aborts the request, which also discards that connection.
+
+What changed:
+- packages/sdk/src/http/multipart.ts: the upload body counts the file's bytes as it sends them.
+  - On too many bytes, the SDK stops before sending the extra ones.
+  - On too few bytes, it stops when the stream ends.
+  - Either way it throws ValidationError, for example { size: 'declared 2000 bytes, but the stream provided 1000' }. This happens before the end of the form is sent, so the server stores nothing.
+  - The check also applies to file paths and Buffers. So a file that changes size during the upload is caught the same way.
+- packages/sdk/src/http/Transport.ts: that ValidationError reaches the caller as-is instead of being wrapped in a NetworkError. The doc comment on Transport says so.
+
+Tests (5 new, all failed before the fix):
+- buildMultipart with too few bytes, with too many (none of the extra bytes are sent), and with the exact size. That's 3 tests in the new packages/sdk/test/multipart.test.ts.
+- NodeTransport against a real local server: a short stream fails with ValidationError in under a second instead of timing out.
+- End to end against the mock: sizes 500 and 2000 both give ValidationError, and documents.list shows no document stored.
+
+Docs:
+- packages/sdk/README.md: the size option must be the exact byte count. The README now explains the mid-upload check, and the troubleshooting table has a row for the mismatch error.
+- Spec: the upload row now states the check, marked as an amendment.
+
+Five deferred findings are left. The next is example 3 saying "will keep trying" after errors that stop polling. The branch is still waiting on your choice: merge to main, push and open a PR, or keep it as-is.
+
+✻ Cogitated for 1m 44s · done 9:49 AM
+Files:
+- examples/01-simple-claim.ts: the scenarios, as one small function each.
+- examples/shared.ts: createSdk(overrides?), which accepts option overrides (apiKey, baseUrl, maxRetries). The key is still passed to the SDK explicitly. Overrides are only used for the auth and network scenarios.
+- Root README.md:
+  - The quickstart's expected output shows just the success run.
+  - The examples table lists the scenarios.
+
+Testing: these are example scripts, so there are no unit tests. I'll run each scenario against the mock server, and run typecheck and lint, which cover examples/.
+
+One choice for you: the default.
+- success (recommended): the first run a partner sees is the plain happy path, and they try the errors on purpose.
+- Keep today's behavior: success followed by the validation error, which is what the README quickstart shows now.
+
+Does this look right? I'll wait for your go-ahead before changing anything.
+
+✻ Brewed for 27s · done 10:47 AM
+
+❯ ok, implement it
+ Ran 1 shell command
+
+⏺ Write(examples/01-simple-claim.ts)
+Added 88 lines, removed 18 lines
+/**
+ * Example 1: submit a claim, then see how client-side validation reports bad input.
+ * Example 1: submit a claim, and see how each kind of failure is reported.
+ *
+ *   npm run example:1
+ *   npm run example:1                            # success (default)
+ *   npm run example:1 -- --scenario validation
+ *   npm run example:1 -- --scenario all
+ */
+import { ValidationError } from '@insurance/partner-sdk';
+import { parseArgs } from 'node:util';
+import { ApiError, AuthError, NetworkError, ValidationError } from '@insurance/partner-sdk';
+import { createSdk, describeClaim, reportError, sampleClaim } from './shared';
+
+const sdk = createSdk();
+const WRONG_API_KEY = 'pk_test_wrong';
+
+try {
+  console.log('Submitting a claim...');
+  const claim = await sdk.claims.create(sampleClaim());
+  console.log(`Created: ${describeClaim(claim)}`);
+interface Scenario {
+  description: string;
+  /** The error this scenario demonstrates; `undefined` means it should succeed. */
+  expected?: typeof ValidationError | typeof AuthError | typeof ApiError | typeof NetworkError;
+  /** The API key the scenario uses, for the hint printed with an `AuthError`. */
+  apiKey?: string;
+  run: () => Promise<void>;
+}
+
+  const fetched = await sdk.claims.get(claim.id);
+  console.log(`Fetched: ${fetched.id} is ${fetched.status} (submitted ${fetched.createdAt})`);
+} catch (error) {
+  reportError(error);
+const scenarios = {
+  success: {
+    description: 'submit a valid claim, then fetch it',
+    run: async () => {
+      const claim = await createSdk().claims.create(sampleClaim());
+      console.log(`Created: ${describeClaim(claim)}`);
+      const fetched = await createSdk().claims.get(claim.id);
+      console.log(`Fetched: ${fetched.id} is ${fetched.status} (submitted ${fetched.createdAt})`);
+    },
+  },
+  validation: {
+    description: 'submit an invalid claim; the SDK rejects it without sending a request',
+    expected: ValidationError,
+    run: async () => {
+      await createSdk().claims.create({ ...sampleClaim(), policyId: '123', diagnosisCode: 'flu', amount: -50 });
+    },
+  },
+  auth: {
+    description: `the SDK is created with a wrong API key (${WRONG_API_KEY})`,
+    expected: AuthError,
+    apiKey: WRONG_API_KEY,
+    run: async () => {
+      await createSdk({ apiKey: WRONG_API_KEY }).claims.create(sampleClaim());
+    },
+  },
+  'not-found': {
+    description: 'fetch a claim that does not exist (CLM-9999)',
+    expected: ApiError,
+    run: async () => {
+      await createSdk().claims.get('CLM-9999');
+    },
+  },
+  network: {
+    description: 'the API is unreachable (baseUrl points at a closed port); the SDK retries 3 times first',
+    expected: NetworkError,
+    run: async () => {
+      await createSdk({ baseUrl: 'http://127.0.0.1:1' }).claims.get('CLM-0001');
+    },
+  },
+} satisfies Record<string, Scenario>;
+
+type ScenarioName = keyof typeof scenarios;
+const names = Object.keys(scenarios) as ScenarioName[];
+
+function usage(message: string): never {
+  console.error(message);
+  console.error('Usage: npm run example:1 [-- --scenario <name>]');
+  console.error(`  name: one of ${names.join(', ')}, all (default success)`);
+  process.exit(1);
+}
+
+console.log('\nSubmitting an invalid claim (no request is sent)...');
+let scenarioArg: string;
+try {
+  await sdk.claims.create({ ...sampleClaim(), policyId: '123', diagnosisCode: 'flu', amount: -50 });
+  scenarioArg = parseArgs({ options: { scenario: { type: 'string', default: 'success' } } }).values.scenario;
+} catch (error) {
+  if (!(error instanceof ValidationError)) {
+    reportError(error);
+    process.exit(1);
+  usage((error as Error).message);
+}
+if (scenarioArg !== 'all' && !(names as string[]).includes(scenarioArg)) usage(`Unknown scenario: ${scenarioArg}`);
+const selected = scenarioArg === 'all' ? names : [scenarioArg as ScenarioName];
+
+/** Runs one scenario and reports whether it behaved as intended. */
+async function runScenario(name: ScenarioName): Promise<boolean> {
+  const scenario: Scenario = scenarios[name];
+  console.log(`Scenario: ${name} (${scenario.description})`);
+  try {
+    await scenario.run();
+  } catch (error) {
+    reportError(error, scenario.apiKey);
+    return scenario.expected !== undefined && error instanceof scenario.expected;
+  }
+  reportError(error);
+  if (scenario.expected) console.error(`Expected ${scenario.expected.name}, but the call succeeded.`);
+  return scenario.expected === undefined;
+}
+
+let ok = true;
+for (const [index, name] of selected.entries()) {
+  if (index > 0) console.log('');
+  ok = (await runScenario(name)) && ok;
+}
+process.exit(ok ? 0 : 1);
+
+  Ran 1 shell command
+
+Typecheck and lint pass. Removing the maxRetries override, since no scenario ended up using it, then running every scenario against the mock:
+
+  Ran 1 shell command
+
+All scenarios work as expected, but I'll clean up the headings (switching to "Scenario auth: ..." instead of nested parentheses) and still need to verify that an error scenario run with the mock stopped correctly exits with code 1.
+
+  Ran 1 shell command
+
+The grep check failed, so the && chain skipped pkill and the mock was still running. The new heading format did apply. Stopping the mock properly and re-running:
+
+  Ran 1 shell command
+
+Exit code 1 works as intended. This also exposed a separate SDK bug: the message reads Network request failed: . with nothing after the colon. I'll come back to it after the README.
+
+  Ran 4 shell commands
+
+Committed. Before reporting, I'll confirm what's behind the empty network error message:
+
+  Ran 1 shell command
+
+Example 1 now takes a --scenario flag that shows either the success path or one of four error cases. I ran each scenario against the mock server, and committed the change as b4a67b6 on feat/partner-sdk. Typecheck and lint are clean, and all 180 tests still pass. The example scripts have no tests of their own.
+
+How to run it:
+
+npm run example:1                            # success (the default)
+npm run example:1 -- --scenario validation   # or auth, not-found, network
+npm run example:1 -- --scenario all          # every scenario in one run
+
+┌────────────┬───────────────────────────────────────────────────────────────────────────────────────┐
+│  Scenario  │                                  Output from my run                                   │
+├────────────┼───────────────────────────────────────────────────────────────────────────────────────┤
+│ success    │ Creates and fetches CLM-0001                                                          │
+├────────────┼───────────────────────────────────────────────────────────────────────────────────────┤
+│ validation │ ValidationError naming three fields; no request is sent                               │
+├────────────┼───────────────────────────────────────────────────────────────────────────────────────┤
+│ auth       │ AuthError INVALID_API_KEY, with a hint showing the masked wrong key (pk_test_****ong) │
+├────────────┼───────────────────────────────────────────────────────────────────────────────────────┤
+│ not-found  │ ApiError 404 NOT_FOUND, with a requestId                                              │
+├────────────┼───────────────────────────────────────────────────────────────────────────────────────┤
+│ network    │ NetworkError after the 3 automatic retries                                            │
+└────────────┴───────────────────────────────────────────────────────────────────────────────────────┘
+
+Exit codes:
+- An error scenario exits 0 when the expected error happens, and 1 otherwise. With the mock stopped, --scenario auth gets a NetworkError instead, so it exits 1.
+- An unknown scenario or flag prints usage and exits 1.
+
+What changed:
+- examples/01-simple-claim.ts: each scenario is a small entry in a table, with a description and the error type it expects.
+- examples/shared.ts:
+  - createSdk() accepts apiKey and baseUrl overrides for the demo scenarios. The key is still passed to the SDK explicitly.
+  - reportError() takes the key that actually failed, so the hint for auth shows the wrong key, not the one from .env.
+- Root README.md: the quickstart shows the success output, then sample output from --scenario all. The examples table lists the scenarios.
+- Spec §7: describes the flag, marked as an amendment.
+
+New bug found: with the mock stopped, the error read Network request failed: . with nothing after the colon. Node reports a refused connection to localhost as an AggregateError with an empty message, because it tries both ::1 and 127.0.0.1. The real reasons (connect ECONNREFUSED ::1:4000 and connect ECONNREFUSED 127.0.0.1:4000) are in error.errors, and the SDK's NetworkError drops them. Any partner whose baseUrl uses localhost and can't connect gets the empty message. The fix is small, in packages/sdk/src/http/Transport.ts: build the message from the inner errors when the outer one is empty. I can propose it properly for your review.
+
+The four earlier deferred findings are still open, and the branch is still waiting on your choice: merge to main, push and open a PR, or keep it as-is.
+
+✻ Baked for 2m 13s · done 10:51 AM
+
+───────────────────────────────────────────────────────────────────────────────────────── 1 new message ─────────────────────────────────────────────────────────────────────────────────────────
+
+※ recap: You're building the insurance Partner Integration SDK; I just added a `--scenario` flag to example 1 to show success and error cases. Next, decide whether I should fix the empty network error message I found.
+❯ /superpowers:requesting-code-review
+
+The review covers the six commits since the last whole-branch review, 09e8f2c..b4a67b6.
+
+  Ran 1 shell command
+
+⏺ Agent(Review post-review SDK fixes)
+Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+A fresh reviewer is now checking the five changes made since the last full review (09e8f2c..b4a67b6). It's running on Opus in the background and gets only the diff, the spec, the plan and the challenge brief, not this conversation.
+
+I asked it to look closely at:
+- Forced refresh: how forceRefresh interacts with invalidate() and with other requests running at the same time.
+- Size check: how it handles stream chunks that aren't Buffers, such as strings or object-mode streams.
+- Retries: whether a size mismatch on a file-path upload gets retried.
+- The INVALID_RESPONSE check: JSON scalars and null, and whether status polling treats this error as fatal.
+- Progress: that it still always ends at 100% with the size check in place.
+- Docs: whether the docs match the code.
+
+It knows about the empty Network request failed: . message and won't report it again as new. When the review comes back, I'll sort the findings and propose fixes for anything important, for your review before changing code.
+
+✻ Worked for 39s · done 11:05 AM
+
+› Message from @general-purpose (ctrl+o to expand)
+
+The reviewer is back. Before passing anything on, I'm checking its main finding myself:
+
+  Ran 1 shell command
+
+⏺ Agent "Review post-review SDK fixes" finished · 4m 8s
+
+The review found no critical issues and two important ones. Both come from one cause in the upload size check I added in a67fc28, and I've reproduced both. Nothing has been changed yet.
+
+Important findings (both confirmed)
+
+1. The size check counts characters, not bytes, when a stream emits text (packages/sdk/src/http/multipart.ts:55). The bytes sent and the bytes counted disagree whenever the text has non-ASCII characters, so the check is wrong in both directions:
+- Correct uploads are rejected. Readable.from(['é', 'é']) with size: 4 (4 is the correct byte count) now fails with "declared 4 bytes, but the stream provided 2". I reproduced this. It's a regression: the same upload worked before my change.
+- Too-large uploads get through. The reviewer uploaded 1009 bytes declared as 509 against the mock server. The check passed, and the server rejected the malformed upload with a bare 400. Progress reached 163%, which breaks the documented "always ends at 100". This is exactly the case the change was meant to catch.
+- Who's affected: binary PDF, JPEG and PNG streams almost always emit Buffers, so few partners will hit this.
+
+2. A stream that emits non-binary values crashes the partner's process. This predates my change, but it's in the same lines.
+- For example, an upload of Readable.from([1, 2, 3]) makes the byte count NaN (I reproduced that). The value then reaches the SDK's progress counter, which throws an error that nothing catches. The reviewer reproduced the crash itself.
+
+Proposed fix for both
+
+In buildMultipart, convert each chunk to a Buffer before counting it:
+- String: Buffer.from(chunk) (UTF-8).
+- Buffer: used as is.
+- Uint8Array: wrapped as a Buffer without copying.
+- Anything else: ValidationError({ file: 'stream must emit Buffer, Uint8Array or string chunks' }).
+
+The count and the bytes sent then always agree. As a second safeguard, an error from the progress counter in packages/sdk/src/http/Transport.ts will also fail the request instead of crashing the process.
+
+Tests (each fails first):
+- Non-ASCII string chunks with the correct byte size upload fine.
+- An oversized string stream is rejected.
+- A number stream gives ValidationError instead of a crash.
+
+Minor findings
+
+My recommendation for each:
+
+┌─────┬────────────────────────────────────────────────────────────────────────────────────────┬───────────────────────────────────────────────────────────────────────────────────────────┐
+│  #  │                                        Finding                                         │                                      Recommendation                                       │
+├─────┼────────────────────────────────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+│ 3   │ A JSON null, true or "ok" body is called "malformed JSON" in the INVALID_RESPONSE      │ Fix: reword the message to "a JSON value that is not an object or array". One line.       │
+│     │ message                                                                                │                                                                                           │
+├─────┼────────────────────────────────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+│ 4   │ A wrong baseUrl that answers the token request with any JSON object still sends Bearer │ Fix: AuthManager throws INVALID_RESPONSE when accessToken isn't a non-empty string.       │
+│     │  undefined, and then fails as AuthError                                                │ Small, and it completes what 5051236 promised.                                            │
+├─────┼────────────────────────────────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+│ 5   │ Example 1's not-found scenario exits 0 for any ApiError, including a chaos 503         │ Fix: the scenario checks for status === 404.                                              │
+├─────┼────────────────────────────────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+│ 6   │ The network scenario ends with "Is the mock server running?" even though the mock is   │ Fix it together with the empty-message bug, since both touch how network errors are       │
+│     │ running                                                                                │ reported.                                                                                 │
+├─────┼────────────────────────────────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+│ 7   │ The README's sample --scenario all output leaves out the network scenario              │ Add it once the empty-message bug is fixed, so the sample shows a real message.           │
+├─────┼────────────────────────────────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+│ 8   │ A file that changes size during upload gets an error saying "the stream provided"      │ Fix: say "the source provided". One word.                                                 │
+└─────┴────────────────────────────────────────────────────────────────────────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────┘
+
+What the reviewer set aside
+
+I agree with each point it set aside:
+- One token request per stream upload is the trade-off we chose.
+- A permanently wrong baseUrl makes onStatusChange report INVALID_RESPONSE on every poll. This follows the documented "keep polling except on AuthError or 404" rule.
+- Very short tokens of about 1 second aren't realistic for this API.
+
+My suggestion: fix items 1–5 and 8 now, then do items 6 and 7 along with the empty network message, which is still waiting for your review. Should I go ahead with that, or would you like a different set?
+
+✻ Cogitated for 5m 10s · done 11:10 AM
+
+※ recap: We're hardening the Partner SDK branch, and a fresh review of the latest fixes found that the upload size check miscounts text streams and can crash on non-binary chunks. Next, approve fixing those plus minor items 3–5 and 8.
+
+❯ ok, implement it
+
+  Ran 2 shell commands
+
+Writing the failing tests first.
+
+  Ran 1 shell command
+
+All 11 tests fail as expected, confirming the crash issue. One test case can't actually work since the transport can't distinguish a valid JSON string body from malformed JSON, so I'm dropping it—JSON null, booleans, and numbers will get the new message, while JSON strings still report "malformed JSON".
+
+  Ran 1 shell command
+
+All 50 targeted tests pass, and the crash is gone. Next, example 1's not-found check (item 5):
+
+  Ran 1 shell command
+
+All 189 tests pass, typecheck and lint are clean, and the build works. Now example 1 against the mock with its default settings (chaos on):
+
+  Ran 1 shell command
+
+Both work. Committing the SDK fixes and the example change separately:
+
+  Ran 1 shell command
+
+I've fixed the review items you approved (1–5 and 8) on feat/partner-sdk, in two commits: a215fe9 (SDK) and cde56f5 (example 1). All 189 tests pass, typecheck and lint are clean, and the build works. I also ran --scenario all against the mock with chaos on, and it exits 0.
+
+What changed in the SDK:
+
+┌─────┬──────────────────────────────────────────────────────────────────────────┬─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│  #  │                                  Before                                  │                                                   Now                                                   │
+├─────┼──────────────────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 1   │ String chunks were counted in characters, not bytes. A correct 'é','é'   │ Every chunk is converted to bytes before counting, with strings encoded as UTF-8.                       │
+│     │ upload with size: 4 was rejected, and oversized text got through.        │                                                                                                         │
+├─────┼──────────────────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 2   │ A stream emitting values like 1, 2, 3 crashed the partner's process.     │ It fails with ValidationError { file: 'stream must emit Buffer, Uint8Array or string chunks' }. As a    │
+│     │                                                                          │ second safeguard, an error in the progress counter now fails the request instead of crashing.           │
+├─────┼──────────────────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 3   │ JSON null, true or 42 was described as "malformed JSON".                 │ The message now says "a JSON value that is not an object or array".                                     │
+├─────┼──────────────────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 4   │ A token response that was a JSON object but had no accessToken still     │ The SDK fails with ApiError INVALID_RESPONSE ("JSON without an accessToken") before sending any API     │
+│     │ sent Bearer undefined.                                                   │ request.                                                                                                │
+├─────┼──────────────────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 8   │ A size mismatch said "the stream provided", even for file uploads.       │ It says "the source provided".                                                                          │
+└─────┴──────────────────────────────────────────────────────────────────────────┴─────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+One limit on item 3: a JSON string body such as "ok" still reads "malformed JSON". By the time the body reaches the SDK's request code, it has already been decoded to plain text, the same as an unparseable body. So the two can't be told apart without changing the Transport interface, which custom transports implement. I left that interface alone.
+
+Example 1 (item 5): each error scenario now checks for the exact error it demonstrates:
+- not-found needs a 404, so a chaos 503 no longer counts as passing.
+- auth needs INVALID_API_KEY.
+
+A different error prints Expected <error>, but got a different error. and exits 1.
+
+Tests: 9 new, all of which failed before the fix:
+- 4 cover how chunks are counted: UTF-8 strings, an oversized string, Uint8Array chunks, and non-binary chunks.
+- 3 cover the scalar message: null, true and 42.
+- 1 checks a token response without accessToken.
+- 1 checks that a non-binary custom stream doesn't crash the process. Before the fix, that crash showed up as an unhandled error in the test run.
+
+I also updated 3 existing tests for the new "source" wording.
+
+Docs:
+- packages/sdk/README.md covers how chunks are handled, the token check and the new wording.
+- The spec amendments are updated to match.
+
+Still open:
+- Empty network error message: the empty Network request failed: . message, plus review items 6 and 7 (the misleading hint in the network scenario and the missing line in the README sample). I'll propose these together for your review.
+- Earlier deferred findings:
+  - Example 3 says "will keep trying" even after errors that stop polling.
+  - The environment check accepts names like 'toString'.
+  - The mock server listens on all network interfaces.
+  - Uploads accept only Node's Readable type.
+- The branch: it's still waiting on your choice: merge to main, push and open a PR, or keep it as-is.
+
+✻ Sautéed for 2m 14s · done 11:22 AM
+
+※ recap: You're hardening the Partner Integration SDK on `feat/partner-sdk`, and the latest review fixes are committed with all 189 tests passing. Next, I'll propose a fix for the empty "Network request failed" message for you to review.
