@@ -422,8 +422,14 @@ const sdk = new InsuranceSDK({ apiKey, environment: 'sandbox', baseUrl: process.
 
 Run via root scripts, e.g. `npm run example:1`.
 
-1. **`01-simple-claim.ts`** — create a valid claim and print it; then attempt an
-   invalid claim and print `error.fields` from `ValidationError`.
+1. **`01-simple-claim.ts [--scenario <name>]`** — `success` (default) creates a
+   valid claim and fetches it. The error scenarios show how each failure is
+   reported: `validation` (`ValidationError.fields`, no request sent), `auth`
+   (wrong API key → `AuthError`), `not-found` (`ApiError` 404), `network`
+   (closed port → `NetworkError` after retries); `all` runs every scenario. An
+   error scenario exits 0 when the expected error occurs, 1 otherwise; an
+   unknown scenario prints usage and exits 1. *(Amended: the flag was added
+   after implementation.)*
 2. **`02-claim-with-documents.ts <filePath> [documentType]`** — file path is a
    **required CLI argument** (`npm run example:2 -- ./receipt.pdf medical_receipt`).
    `documentType` defaults to `medical_receipt`. If the path is missing or does

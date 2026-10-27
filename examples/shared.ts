@@ -8,13 +8,15 @@ import {
   type Claim,
   type CreateClaimInput,
   InsuranceSDK,
+  type InsuranceSDKOptions,
   maskApiKey,
   NetworkError,
   ValidationError,
 } from '@insurance/partner-sdk';
 
-export function createSdk(): InsuranceSDK {
-  const apiKey = process.env.INSURANCE_API_KEY;
+/** `overrides` replace the values from `.env`; example 1 uses them to demonstrate failures. */
+export function createSdk(overrides: Partial<Pick<InsuranceSDKOptions, 'apiKey' | 'baseUrl'>> = {}): InsuranceSDK {
+  const apiKey = overrides.apiKey ?? process.env.INSURANCE_API_KEY;
   if (!apiKey) {
     console.error('Set INSURANCE_API_KEY in .env (see .env.example)');
     process.exit(1);
@@ -23,7 +25,7 @@ export function createSdk(): InsuranceSDK {
   return new InsuranceSDK({
     apiKey,
     environment: 'sandbox',
-    baseUrl: process.env.INSURANCE_BASE_URL ?? 'http://localhost:4000',
+    baseUrl: overrides.baseUrl ?? process.env.INSURANCE_BASE_URL ?? 'http://localhost:4000',
   });
 }
 
@@ -52,16 +54,15 @@ export function timestamp(): string {
   return new Date().toTimeString().slice(0, 8);
 }
 
-/** The recommended way to branch on SDK errors. */
-export function reportError(error: unknown): void {
+/** The recommended way to branch on SDK errors. `apiKey` is the key the failing SDK used. */
+export function reportError(error: unknown, apiKey = process.env.INSURANCE_API_KEY): void {
   const requestId = error instanceof Error && 'requestId' in error && error.requestId ? ` (requestId ${String(error.requestId)})` : '';
   if (error instanceof ValidationError) {
     console.error(`Validation failed${requestId}:`);
     for (const [field, message] of Object.entries(error.fields)) console.error(`  - ${field}: ${message}`);
   } else if (error instanceof AuthError) {
-    const key = process.env.INSURANCE_API_KEY;
     console.error(`Authentication failed [${error.code}]${requestId}: ${error.message}`);
-    if (key) console.error(`  Check INSURANCE_API_KEY (${maskApiKey(key)}) and that the mock server accepts it (MOCK_API_KEYS).`);
+    if (apiKey) console.error(`  Check the API key (${maskApiKey(apiKey)}) and that the mock server accepts it (MOCK_API_KEYS).`);
   } else if (error instanceof NetworkError) {
     console.error(`Network problem [${error.code}]: ${error.message}. Is the mock server running? (npm run mock)`);
   } else if (error instanceof ApiError) {

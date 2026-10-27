@@ -27,15 +27,26 @@ npm run example:1
 Expected output:
 
 ```
-Submitting a claim...
+Scenario success: submit a valid claim, then fetch it
 Created: CLM-0001 | SUBMITTED | OUTPATIENT 15,000 THB | policy POL-123
 Fetched: CLM-0001 is SUBMITTED (submitted 2026-10-27T09:00:00.000Z)
+```
 
-Submitting an invalid claim (no request is sent)...
+To see how each kind of failure is reported, run `npm run example:1 -- --scenario all`:
+
+```
+Scenario validation: submit an invalid claim; the SDK rejects it without sending a request
 Validation failed:
   - policyId: must match POL-<digits>
   - diagnosisCode: must be a valid ICD-10 code
   - amount: must be positive
+
+Scenario auth: the SDK is created with a wrong API key (pk_test_wrong)
+Authentication failed [INVALID_API_KEY] (requestId req-9): Unknown API key
+  Check the API key (pk_test_****ong) and that the mock server accepts it (MOCK_API_KEYS).
+
+Scenario not-found: fetch a claim that does not exist (CLM-9999)
+API error 404 [NOT_FOUND] (requestId req-11): Claim CLM-9999 not found
 ```
 
 The code behind it is short:
@@ -62,7 +73,7 @@ const claim = await sdk.claims.create({
 
 | Script | What it shows |
 |---|---|
-| `npm run example:1` | Submit a claim; handle `ValidationError` from client-side validation. |
+| `npm run example:1 [-- --scenario <name>]` | Submit a claim (`success`, the default), or show how each failure is reported: `validation` (`ValidationError`, no request sent), `auth` (`AuthError`), `not-found` (`ApiError` 404), `network` (`NetworkError` after retries), or `all`. Error scenarios exit `0` when the expected error occurs. |
 | `npm run example:2 -- <filePath> [documentType]` | Submit a claim and upload a document with a progress bar. Try `npm run example:2 -- examples/fixtures/sample-receipt.pdf`. |
 | `npm run example:3 [-- <claimId>]` | Watch a claim's status until you press Ctrl+C. It prints the `curl` command to move the claim to its next status. |
 
