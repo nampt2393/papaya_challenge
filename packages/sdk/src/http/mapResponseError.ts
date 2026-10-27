@@ -21,14 +21,17 @@ function stringFields(value: unknown): Record<string, string> {
  * For a 2xx response whose body is not parsed JSON, e.g. a website or proxy page answering instead of the API.
  * Never retried: the server answered, and may have acted on the request.
  */
-export function invalidResponseError(res: TransportResponse): ApiError {
+export function invalidResponseError(res: TransportResponse, description?: string): ApiError {
   const contentType = res.headers['content-type']?.split(';')[0]?.trim();
   const got =
-    res.body === undefined
+    description ??
+    (res.body === undefined
       ? 'an empty body'
-      : contentType?.includes('json')
-        ? 'malformed JSON'
-        : (contentType ?? 'a body without a content type');
+      : typeof res.body !== 'string'
+        ? 'a JSON value that is not an object or array'
+        : contentType?.includes('json')
+          ? 'malformed JSON'
+          : (contentType ?? 'a body without a content type'));
   return new ApiError(`Expected a JSON response but got ${got} (status ${res.status})`, {
     status: res.status,
     code: 'INVALID_RESPONSE',

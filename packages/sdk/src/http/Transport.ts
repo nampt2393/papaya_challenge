@@ -132,6 +132,11 @@ export class NodeTransport implements Transport {
           callback(null, chunk);
         },
       });
+      // Defence in depth: a custom body stream emitting non-binary chunks must fail the request, not crash the process.
+      counter.on('error', (error) => {
+        fail(new NetworkError(`Failed to send upload body: ${error.message}`, { cause: error, retryable: false }));
+        clientRequest.destroy();
+      });
       source.on('error', (error) => {
         // An SDKError (e.g. a size mismatch) is the caller's input problem; anything else is a read failure.
         fail(error instanceof SDKError ? error : new NetworkError(`Failed to read upload body: ${error.message}`, { cause: error, retryable: false }));

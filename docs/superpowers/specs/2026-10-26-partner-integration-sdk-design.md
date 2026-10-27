@@ -268,9 +268,12 @@ for attempt in 0..maxRetries:
 ```
 
 A 2xx response is returned only when its body is parsed JSON (an object or array).
-Otherwise it throws `ApiError { code: 'INVALID_RESPONSE', status, body: rawText }`, never
+Otherwise it throws `ApiError { code: 'INVALID_RESPONSE', status, body }` (`body` is the raw text,
+or the parsed value for a JSON scalar), never
 retried. This covers a `baseUrl` that points at a website, or a proxy page answering
-`200`. *(Amended: a non-JSON 2xx body used to be returned as a string typed as `T`.)*
+`200`. The token request also fails with `INVALID_RESPONSE` when `accessToken` is not a non-empty
+string, so the SDK never sends `Bearer undefined`. *(Amended: a non-JSON 2xx body used to be
+returned as a string typed as `T`.)*
 
 Status → error mapping:
 
@@ -312,7 +315,7 @@ mock server's `x-request-id` response header.
 
 | Method | Behaviour |
 |---|---|
-| `upload(claimId, source, opts): Promise<ClaimDocument>` | resolve source (path → `fs.stat` + read stream; Buffer → length; stream → `opts.size`), infer content type, `validateDocument` → `POST /claims/:id/documents` multipart (`file`, `type`). Converts byte progress into integer `onProgress(percent)` calls, monotonic, deduplicated, final call is `100`. The multipart body counts the file bytes it sends: if they exceed the announced size, or end short of it, the upload is aborted before the closing boundary with `ValidationError({ size })`, so the server stores nothing. *(Amended: a wrong stream `size` used to hang until the timeout.)* |
+| `upload(claimId, source, opts): Promise<ClaimDocument>` | resolve source (path → `fs.stat` + read stream; Buffer → length; stream → `opts.size`), infer content type, `validateDocument` → `POST /claims/:id/documents` multipart (`file`, `type`). Converts byte progress into integer `onProgress(percent)` calls, monotonic, deduplicated, final call is `100`. The multipart body converts each chunk to bytes (strings as UTF-8; chunks that are not `Buffer`, `Uint8Array` or string fail with `ValidationError({ file })`) and counts the bytes it sends: if they exceed the announced size, or end short of it, the upload is aborted before the closing boundary with `ValidationError({ size })`, so the server stores nothing. *(Amended: a wrong stream `size` used to hang until the timeout.)* |
 | `list(claimId): Promise<ClaimDocument[]>` | `GET /claims/:id/documents` |
 
 ### 4.8 StatusPoller

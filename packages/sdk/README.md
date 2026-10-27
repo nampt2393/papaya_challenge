@@ -158,7 +158,7 @@ Uploads a PDF, JPEG or PNG of at most 10 MB.
 
 All checks run before any bytes are sent. They produce `ValidationError` with fields such as `{ file: 'file not found' }`, `{ filename: 'required' }`, `{ size: 'must be at most 10 MB' }`, `{ size: 'must be greater than 0' }` and `{ contentType: 'must be one of application/pdf, image/jpeg, image/png' }`.
 
-One check runs while the file is sent: the number of bytes must match the size the SDK announced (the stream's `size`, or the file's size when the upload started). On a mismatch the SDK stops sending at once and throws `ValidationError`, e.g. `{ size: 'declared 2000 bytes, but the stream provided 1000' }`. The server never receives a complete upload, so nothing is stored and you can fix `size` and upload again.
+One check runs while the file is sent: the number of bytes must match the size the SDK announced (the stream's `size`, or the file's size when the upload started). On a mismatch the SDK stops sending at once and throws `ValidationError`, e.g. `{ size: 'declared 2000 bytes, but the source provided 1000' }`. String chunks are counted as UTF-8 bytes, and a stream that emits anything other than `Buffer`, `Uint8Array` or string chunks fails with `{ file: 'stream must emit Buffer, Uint8Array or string chunks' }`. The server never receives a complete upload, so nothing is stored and you can fix `size` and upload again.
 
 ### `documents.list(claimId)`
 
@@ -178,7 +178,7 @@ Every error the SDK throws extends `SDKError`, which extends `Error`. Use `insta
 | `AuthError` | Invalid API key, or a token the API keeps rejecting after a refresh | `code: 'INVALID_API_KEY' \| 'TOKEN_EXPIRED' \| 'UNAUTHORIZED'` |
 | `NetworkError` | No HTTP response: connection failure or timeout, after retries | `code: 'NETWORK_ERROR' \| 'TIMEOUT'`, `retryable`, `requestSent` (the server may have received the request), `cause` |
 | `ApiError` | Any other error response, including 503 after retries | `status`, `code` (e.g. `NOT_FOUND`, `SERVICE_UNAVAILABLE`, `FILE_TOO_LARGE`, or `HTTP_<status>` for non-JSON bodies), `body` |
-| `ApiError` with `code: 'INVALID_RESPONSE'` | A success status (2xx) whose body isn't JSON, e.g. an HTML page. Never retried. | `status` (e.g. `200`), `body` (the raw text) |
+| `ApiError` with `code: 'INVALID_RESPONSE'` | A success status (2xx) whose body isn't a JSON object or array (e.g. an HTML page), or a token response without an `accessToken`. Never retried. | `status` (e.g. `200`), `body` (the raw text) |
 
 All errors carry `code`, `message` and, when the API returned one, `requestId` (from the `x-request-id` header).
 
@@ -482,7 +482,7 @@ A transport resolves for every HTTP status and rejects only with `NetworkError`,
 | `ApiError` `INVALID_RESPONSE` with an HTML `body` | Something other than the API answered: `baseUrl` points at a website, or a proxy or captive portal replied | Check `baseUrl` (it's the API's root, without `/api/v1`) and your network's proxy settings |
 | `ApiError` 503 `SERVICE_UNAVAILABLE` | The service is still failing after all retries | Queue the work and retry later; increase `maxRetries` if the outages are brief |
 | `ValidationError { size: 'must be at most 10 MB' }` / `ApiError` 413 `FILE_TOO_LARGE` | The file is over 10 MB | Compress the PDF or scan at a lower resolution |
-| `ValidationError { size: 'declared … bytes, but the stream provided …' }` | The stream's `size` option doesn't match its real length, or a file changed while it was uploading | Pass the exact byte count (e.g. the object's `ContentLength` from storage), or buffer the stream first |
+| `ValidationError { size: 'declared … bytes, but the source provided …' }` | The stream's `size` option doesn't match its real length, or a file changed while it was uploading | Pass the exact byte count (e.g. the object's `ContentLength` from storage), or buffer the stream first |
 | `ValidationError { contentType: ... }` / `ApiError` 415 `UNSUPPORTED_MEDIA_TYPE` | Not a PDF, JPEG or PNG, or the extension is missing | Convert the file, or pass `contentType` explicitly |
 | `ApiError` 409 `INVALID_TRANSITION` (mock control endpoint) | That move isn't allowed by the lifecycle | Use one of the statuses in the response's `allowed` list |
 | The process doesn't exit | An `onStatusChange` subscription is still active | Call the function `onStatusChange` returned |

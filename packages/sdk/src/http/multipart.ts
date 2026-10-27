@@ -25,7 +25,15 @@ function quote(value: string): string {
 }
 
 function sizeMismatch(declared: number, provided: string): ValidationError {
-  return new ValidationError({ size: `declared ${declared} bytes, but the stream provided ${provided}` });
+  return new ValidationError({ size: `declared ${declared} bytes, but the source provided ${provided}` });
+}
+
+/** Object-mode streams may emit strings or other values; count and send them as bytes. */
+function toBuffer(chunk: unknown): Buffer {
+  if (Buffer.isBuffer(chunk)) return chunk;
+  if (typeof chunk === 'string') return Buffer.from(chunk, 'utf8');
+  if (chunk instanceof Uint8Array) return Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+  throw new ValidationError({ file: 'stream must emit Buffer, Uint8Array or string chunks' });
 }
 
 /** Builds a multipart body with the text `fields` first, then the file part. */
@@ -53,9 +61,10 @@ export function buildMultipart(fields: Record<string, string>, file: MultipartFi
           // or corrupt the connection. Abort before the closing boundary so the server stores nothing.
           let received = 0;
           for await (const chunk of file.open()) {
-            received += (chunk as Buffer).length;
+            const bytes = toBuffer(chunk);
+            received += bytes.length;
             if (received > file.size) throw sizeMismatch(file.size, 'more');
-            yield chunk as Buffer;
+            yield bytes;
           }
           if (received < file.size) throw sizeMismatch(file.size, String(received));
           yield epilogue;

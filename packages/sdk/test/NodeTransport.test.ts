@@ -172,8 +172,16 @@ describe('NodeTransport', () => {
     const started = Date.now();
     await expect(transport.send({ method: 'POST', url: `${base}/upload`, headers: {}, body, timeoutMs: 2000 })).rejects.toMatchObject({
       name: 'ValidationError',
-      fields: { size: 'declared 2000 bytes, but the stream provided 1000' },
+      fields: { size: 'declared 2000 bytes, but the source provided 1000' },
     });
     expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it('fails the request instead of crashing when a body stream emits non-binary chunks', async () => {
+    const body = { kind: 'multipart', boundary: 'b', contentLength: 3, replayable: false, createStream: () => Readable.from([1, 2, 3]) } as const;
+    await expect(transport.send({ method: 'POST', url: `${base}/upload`, headers: {}, body, timeoutMs: 2000 })).rejects.toMatchObject({
+      name: 'NetworkError',
+      retryable: false,
+    });
   });
 });

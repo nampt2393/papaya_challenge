@@ -21,6 +21,8 @@ export interface RequestOptions {
    * Non-idempotent requests are retried after a network error only if the connection was never made.
    */
   idempotent?: boolean;
+  /** Checks a 2xx JSON body's shape; when it returns a description of the problem, the request fails with INVALID_RESPONSE. */
+  checkBody?: (body: object) => string | undefined;
 }
 
 export interface HttpClientOptions {
@@ -52,6 +54,10 @@ export class HttpClient {
           json: { apiKey: options.apiKey },
           auth: false,
           idempotent: true,
+          checkBody: (body) =>
+            'accessToken' in body && typeof body.accessToken === 'string' && body.accessToken !== ''
+              ? undefined
+              : 'JSON without an accessToken',
         }),
       ...(options.now ? { now: options.now } : {}),
     });
@@ -80,8 +86,10 @@ export class HttpClient {
       }
 
       if (res.status >= 200 && res.status < 300) {
-        if (typeof res.body === 'object' && res.body !== null) return res.body as T;
-        throw invalidResponseError(res);
+        if (typeof res.body !== 'object' || res.body === null) throw invalidResponseError(res);
+        const problem = options.checkBody?.(res.body);
+        if (problem !== undefined) throw invalidResponseError(res, problem);
+        return res.body as T;
       }
 
       // One re-authentication per request, not counted as a retry.

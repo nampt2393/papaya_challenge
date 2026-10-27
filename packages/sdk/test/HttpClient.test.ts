@@ -201,6 +201,32 @@ describe('HttpClient', () => {
       expect(transport.calls.filter((c) => !isTokenRequest(c))).toHaveLength(0);
     });
 
+    it.each([null, true, 42])('names a JSON %j body as a non-object value, not malformed JSON', async (value) => {
+      const { client } = setup(() => json(200, value));
+      await expect(client.request({ method: 'GET', path: '/claims' })).rejects.toMatchObject({
+        code: 'INVALID_RESPONSE',
+        message: 'Expected a JSON response but got a JSON value that is not an object or array (status 200)',
+      });
+    });
+
+    it('fails a token response without accessToken with INVALID_RESPONSE instead of sending Bearer undefined', async () => {
+      const transport = fakeTransport((req) => (isTokenRequest(req) ? json(200, { status: 'ok' }) : json(200, {})));
+      const client = new HttpClient({
+        baseUrl: 'http://api.test',
+        apiKey: 'pk_test_dev_123',
+        timeoutMs: 1000,
+        transport,
+        retry: new RetryPolicy({ maxRetries: 3, random: () => 0 }),
+        sleep: async () => {},
+      });
+      await expect(client.request({ method: 'GET', path: '/claims' })).rejects.toMatchObject({
+        name: 'ApiError',
+        code: 'INVALID_RESPONSE',
+        message: 'Expected a JSON response but got JSON without an accessToken (status 200)',
+      });
+      expect(transport.calls.filter((c) => !isTokenRequest(c))).toHaveLength(0);
+    });
+
     it('returns a JSON array body unchanged', async () => {
       const { client } = setup(() => json(200, [{ id: 'DOC-1' }]));
       await expect(client.request({ method: 'GET', path: '/claims/CLM-1/documents' })).resolves.toEqual([{ id: 'DOC-1' }]);
