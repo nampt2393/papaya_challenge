@@ -1,3 +1,4 @@
+import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import {
   ApiError,
@@ -7,6 +8,7 @@ import {
   InsuranceSDK,
   NodeTransport,
   type Transport,
+  ValidationError,
 } from '@insurance/partner-sdk';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -84,6 +86,19 @@ describe('SDK against the mock server', () => {
     expect(document).toMatchObject({ claimId: id, filename: 'sample-receipt.pdf', contentType: 'application/pdf' });
     expect(progress.at(-1)).toBe(100);
     await expect(sdk.documents.list(id)).resolves.toHaveLength(1);
+  });
+
+  it('a stream with a wrong declared size fails with ValidationError and stores nothing', async () => {
+    const { id } = await sdk.claims.create(input);
+    const pdf = Buffer.from(`%PDF-1.4 ${'x'.repeat(991)}`);
+    for (const size of [500, 2000]) {
+      const error = await sdk.documents
+        .upload(id, Readable.from([pdf]), { type: 'medical_receipt', filename: 'r.pdf', size })
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error).toMatchObject({ fields: { size: expect.stringContaining(`declared ${size} bytes`) } });
+    }
+    await expect(sdk.documents.list(id)).resolves.toHaveLength(0);
   });
 
   it('onStatusChange observes a transition made through the control endpoint', async () => {

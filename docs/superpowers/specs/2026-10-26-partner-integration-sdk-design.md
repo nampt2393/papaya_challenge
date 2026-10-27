@@ -307,7 +307,7 @@ mock server's `x-request-id` response header.
 
 | Method | Behaviour |
 |---|---|
-| `upload(claimId, source, opts): Promise<ClaimDocument>` | resolve source (path → `fs.stat` + read stream; Buffer → length; stream → `opts.size`), infer content type, `validateDocument` → `POST /claims/:id/documents` multipart (`file`, `type`). Converts byte progress into integer `onProgress(percent)` calls, monotonic, deduplicated, final call is `100`. |
+| `upload(claimId, source, opts): Promise<ClaimDocument>` | resolve source (path → `fs.stat` + read stream; Buffer → length; stream → `opts.size`), infer content type, `validateDocument` → `POST /claims/:id/documents` multipart (`file`, `type`). Converts byte progress into integer `onProgress(percent)` calls, monotonic, deduplicated, final call is `100`. The multipart body counts the file bytes it sends: if they exceed the announced size, or end short of it, the upload is aborted before the closing boundary with `ValidationError({ size })`, so the server stores nothing. *(Amended: a wrong stream `size` used to hang until the timeout.)* |
 | `list(claimId): Promise<ClaimDocument[]>` | `GET /claims/:id/documents` |
 
 ### 4.8 StatusPoller

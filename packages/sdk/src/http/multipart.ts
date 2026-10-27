@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { Readable } from 'node:stream';
+import { ValidationError } from '../errors';
 
 export interface MultipartFile {
   fieldName: string;
@@ -23,6 +24,10 @@ function quote(value: string): string {
   return value.replace(/"/g, '%22').replace(/\r|\n/g, ' ');
 }
 
+function sizeMismatch(declared: number, provided: string): ValidationError {
+  return new ValidationError({ size: `declared ${declared} bytes, but the stream provided ${provided}` });
+}
+
 /** Builds a multipart body with the text `fields` first, then the file part. */
 export function buildMultipart(fields: Record<string, string>, file: MultipartFile, replayable: boolean): MultipartBody {
   const boundary = `----insurance-sdk-${randomBytes(8).toString('hex')}`;
@@ -44,7 +49,15 @@ export function buildMultipart(fields: Record<string, string>, file: MultipartFi
       Readable.from(
         (async function* () {
           yield preamble;
-          for await (const chunk of file.open()) yield chunk as Buffer;
+          // Content-Length is fixed up front, so a source that disagrees with `size` would hang the request
+          // or corrupt the connection. Abort before the closing boundary so the server stores nothing.
+          let received = 0;
+          for await (const chunk of file.open()) {
+            received += (chunk as Buffer).length;
+            if (received > file.size) throw sizeMismatch(file.size, 'more');
+            yield chunk as Buffer;
+          }
+          if (received < file.size) throw sizeMismatch(file.size, String(received));
           yield epilogue;
         })(),
       ),

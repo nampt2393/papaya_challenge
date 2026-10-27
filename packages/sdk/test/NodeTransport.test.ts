@@ -162,4 +162,18 @@ describe('NodeTransport', () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(source?.destroyed).toBe(true);
   });
+
+  it('rejects a stream shorter than its declared size with ValidationError instead of timing out', async () => {
+    const body = buildMultipart(
+      { type: 'other' },
+      { fieldName: 'file', filename: 'r.pdf', contentType: 'application/pdf', size: 2000, open: () => Readable.from([Buffer.alloc(1000)]) },
+      false,
+    );
+    const started = Date.now();
+    await expect(transport.send({ method: 'POST', url: `${base}/upload`, headers: {}, body, timeoutMs: 2000 })).rejects.toMatchObject({
+      name: 'ValidationError',
+      fields: { size: 'declared 2000 bytes, but the stream provided 1000' },
+    });
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
 });

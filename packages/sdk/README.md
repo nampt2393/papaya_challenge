@@ -153,10 +153,12 @@ Uploads a PDF, JPEG or PNG of at most 10 MB.
 | `type` | `DocumentType` | `medical_receipt` \| `medical_report` \| `prescription` \| `id_card` \| `other` |
 | `filename` | `string` | Name sent to the API; also used to infer the content type |
 | `contentType` | `string` | `application/pdf` \| `image/jpeg` \| `image/png`; inferred from the extension when omitted |
-| `size` | `number` | Size in bytes (streams only) |
+| `size` | `number` | Exact size in bytes (streams only). If the stream provides more or fewer bytes, the upload is aborted with `ValidationError` and nothing is stored. |
 | `onProgress` | `(percent: number) => void` | Integer percentages that only ever increase, always ending with `100` |
 
 All checks run before any bytes are sent. They produce `ValidationError` with fields such as `{ file: 'file not found' }`, `{ filename: 'required' }`, `{ size: 'must be at most 10 MB' }`, `{ size: 'must be greater than 0' }` and `{ contentType: 'must be one of application/pdf, image/jpeg, image/png' }`.
+
+One check runs while the file is sent: the number of bytes must match the size the SDK announced (the stream's `size`, or the file's size when the upload started). On a mismatch the SDK stops sending at once and throws `ValidationError`, e.g. `{ size: 'declared 2000 bytes, but the stream provided 1000' }`. The server never receives a complete upload, so nothing is stored and you can fix `size` and upload again.
 
 ### `documents.list(claimId)`
 
@@ -478,6 +480,7 @@ A transport resolves for every HTTP status and rejects only with `NetworkError`,
 | `NetworkError` `TIMEOUT` | No response within `timeout` | Increase `timeout`, or check the API's status |
 | `ApiError` 503 `SERVICE_UNAVAILABLE` | The service is still failing after all retries | Queue the work and retry later; increase `maxRetries` if the outages are brief |
 | `ValidationError { size: 'must be at most 10 MB' }` / `ApiError` 413 `FILE_TOO_LARGE` | The file is over 10 MB | Compress the PDF or scan at a lower resolution |
+| `ValidationError { size: 'declared … bytes, but the stream provided …' }` | The stream's `size` option doesn't match its real length, or a file changed while it was uploading | Pass the exact byte count (e.g. the object's `ContentLength` from storage), or buffer the stream first |
 | `ValidationError { contentType: ... }` / `ApiError` 415 `UNSUPPORTED_MEDIA_TYPE` | Not a PDF, JPEG or PNG, or the extension is missing | Convert the file, or pass `contentType` explicitly |
 | `ApiError` 409 `INVALID_TRANSITION` (mock control endpoint) | That move isn't allowed by the lifecycle | Use one of the statuses in the response's `allowed` list |
 | The process doesn't exit | An `onStatusChange` subscription is still active | Call the function `onStatusChange` returned |

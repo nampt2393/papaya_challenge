@@ -1,7 +1,7 @@
 import { request as httpRequest, type IncomingMessage } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { type Readable, Transform } from 'node:stream';
-import { NetworkError } from '../errors';
+import { NetworkError, SDKError } from '../errors';
 import type { MultipartBody } from './multipart';
 
 export type HttpMethod = 'GET' | 'POST' | 'PATCH';
@@ -25,8 +25,8 @@ export interface TransportResponse {
 }
 
 /**
- * Sends one HTTP request. Resolves for every HTTP status; rejects only with
- * `NetworkError` when no response arrives. Implement it to customise networking or for tests.
+ * Sends one HTTP request. Resolves for every HTTP status; rejects with `NetworkError`
+ * when no response arrives, or with the `SDKError` an upload body fails with (e.g. a size mismatch). Implement it to customise networking or for tests.
  */
 export interface Transport {
   send(req: TransportRequest): Promise<TransportResponse>;
@@ -76,7 +76,7 @@ export class NodeTransport implements Transport {
       const stopUpload = () => {
         if (source && !source.destroyed) source.destroy();
       };
-      const fail = (error: NetworkError) => {
+      const fail = (error: SDKError) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
@@ -133,7 +133,8 @@ export class NodeTransport implements Transport {
         },
       });
       source.on('error', (error) => {
-        fail(new NetworkError(`Failed to read upload body: ${error.message}`, { cause: error, retryable: false }));
+        // An SDKError (e.g. a size mismatch) is the caller's input problem; anything else is a read failure.
+        fail(error instanceof SDKError ? error : new NetworkError(`Failed to read upload body: ${error.message}`, { cause: error, retryable: false }));
         clientRequest.destroy();
       });
       source.pipe(counter).pipe(clientRequest);
