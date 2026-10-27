@@ -25,6 +25,23 @@ function setup(handler: (req: TransportRequest, apiCallIndex: number) => FakeRep
   };
 }
 
+function uploadBody(replayable: boolean, onOpen: () => void = () => {}) {
+  return buildMultipart(
+    { type: 'other' },
+    {
+      fieldName: 'file',
+      filename: 'a.pdf',
+      contentType: 'application/pdf',
+      size: 1,
+      open: () => {
+        onOpen();
+        return Readable.from([Buffer.from('x')]);
+      },
+    },
+    replayable,
+  );
+}
+
 describe('HttpClient', () => {
   it('fetches a token once and sends it as Bearer', async () => {
     const { client, transport, tokenCalls } = setup(() => json(200, { ok: true }));
@@ -191,6 +208,57 @@ describe('HttpClient', () => {
       });
       await expect(client.request({ method: 'GET', path: '/claims' })).resolves.toEqual({ ok: true });
       expect(tokenAttempts).toBe(2);
+    });
+  });
+
+  describe('fresh token before a stream upload', () => {
+    const upload = { method: 'POST', path: '/claims/CLM-1/documents' } as const;
+
+    it('fetches a new token for a stream upload even when the cached one is valid', async () => {
+      const { client, transport, tokenCalls } = setup(() => json(201, { id: 'DOC-1' }));
+      await client.request({ method: 'GET', path: '/claims' });
+      await client.request({ ...upload, multipart: uploadBody(false) });
+      expect(tokenCalls()).toBe(2);
+      expect(transport.calls.at(-1)!.headers.authorization).toBe('Bearer tok-2');
+    });
+
+    it('reuses the cached token for a replayable (path or Buffer) upload', async () => {
+      const { client, tokenCalls } = setup(() => json(201, { id: 'DOC-1' }));
+      await client.request({ method: 'GET', path: '/claims' });
+      await client.request({ ...upload, multipart: uploadBody(true) });
+      expect(tokenCalls()).toBe(1);
+    });
+
+    it('2 concurrent stream uploads share 1 token refresh', async () => {
+      const { client, tokenCalls } = setup(() => json(201, { id: 'DOC-1' }));
+      await client.request({ method: 'GET', path: '/claims' });
+      await Promise.all([client.request({ ...upload, multipart: uploadBody(false) }), client.request({ ...upload, multipart: uploadBody(false) })]);
+      expect(tokenCalls()).toBe(2);
+    });
+
+    it('does not send or read the stream when the token request fails', async () => {
+      let tokens = 0;
+      let opened = false;
+      const transport = fakeTransport((req) => {
+        if (!isTokenRequest(req)) return json(201, { id: 'DOC-1' });
+        tokens += 1;
+        return tokens === 1
+          ? json(200, { accessToken: 'tok-1', tokenType: 'Bearer', expiresIn: 3600 })
+          : json(401, { code: 'INVALID_API_KEY', message: 'revoked' });
+      });
+      const client = new HttpClient({
+        baseUrl: 'http://api.test',
+        apiKey: 'pk_test_dev_123',
+        timeoutMs: 1000,
+        transport,
+        retry: new RetryPolicy({ maxRetries: 3, random: () => 0 }),
+        sleep: async () => {},
+      });
+      await client.request({ method: 'GET', path: '/claims' });
+      const error = await client.request({ ...upload, multipart: uploadBody(false, () => (opened = true)) }).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(AuthError);
+      expect(transport.calls.filter((c) => !isTokenRequest(c))).toHaveLength(1);
+      expect(opened).toBe(false);
     });
   });
 });

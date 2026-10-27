@@ -304,7 +304,7 @@ await sdk.documents.upload(claim.id, object.Body as Readable, {
     onProgress: (percent) => job.updateProgress(percent),
   });
   ```
-- **Retries:** paths and Buffers are retried on 503, and on network errors that happen before the connection is established. Streams are **not**, because a stream can only be read once. If you need retries for a stream, buffer it first (fine for files of 10 MB or less) or write it to a temporary file.
+- **Retries:** paths and Buffers are retried on 503, and on network errors that happen before the connection is established. Streams are **not**, because a stream can only be read once. If you need retries for a stream, buffer it first (fine for files of 10 MB or less) or write it to a temporary file. Stream uploads always start with a newly issued token, so a token the server has already revoked can't fail them. If that token request fails, the stream is left unread and you can retry with it.
 
 ## 6. Tracking status
 

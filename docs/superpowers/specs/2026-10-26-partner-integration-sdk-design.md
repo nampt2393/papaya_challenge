@@ -249,7 +249,10 @@ interface Transport { send(req: TransportRequest): Promise<TransportResponse> }
 - `maxRetries` default 3 (so up to 4 attempts). Sleep and random are injectable.
 - Uploads from a non-replayable stream source are **not** retried, including
   the 401 re-auth retry (a file path or Buffer is replayable and is retried).
-  The SDK obtains a fresh token before starting a stream upload to minimise this.
+  The SDK obtains a fresh token before starting a stream upload to minimise this:
+  `getToken({ forceRefresh: true })` skips the cache but joins any refresh already
+  in flight, and runs before the stream is read, so a failed token request leaves
+  the stream untouched.
 
 ### 4.5 HttpClient
 

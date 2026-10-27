@@ -62,6 +62,19 @@ describe('AuthManager', () => {
     expect(fetchToken).toHaveBeenCalledTimes(2);
   });
 
+  it('forceRefresh skips a valid cached token', async () => {
+    expect(await auth.getToken()).toBe('tok-1');
+    expect(await auth.getToken({ forceRefresh: true })).toBe('tok-2');
+    expect(await auth.getToken()).toBe('tok-2');
+    expect(fetchToken).toHaveBeenCalledTimes(2);
+  });
+
+  it('forceRefresh joins a refresh that is already in flight', async () => {
+    const tokens = await Promise.all([auth.getToken(), auth.getToken({ forceRefresh: true }), auth.getToken({ forceRefresh: true })]);
+    expect(tokens).toEqual(['tok-1', 'tok-1', 'tok-1']);
+    expect(fetchToken).toHaveBeenCalledTimes(1);
+  });
+
   it('3 concurrent calls with no valid token trigger exactly 1 refresh', async () => {
     const tokens = await Promise.all([auth.getToken(), auth.getToken(), auth.getToken()]);
     expect(tokens).toEqual(['tok-1', 'tok-1', 'tok-1']);

@@ -65,7 +65,8 @@ export class HttpClient {
     let reauthenticated = false;
 
     for (;;) {
-      const token = options.auth === false ? undefined : await this.auth.getToken();
+      // A stream upload cannot re-authenticate after a 401, so it starts with a newly issued token.
+      const token = options.auth === false ? undefined : await this.auth.getToken({ forceRefresh: !replayable });
       let res: TransportResponse;
       try {
         res = await transport.send(this.buildRequest(options, token));

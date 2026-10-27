@@ -26,8 +26,9 @@ export class AuthManager {
     this.now = options.now ?? Date.now;
   }
 
-  getToken(): Promise<string> {
-    if (this.token && this.now() < this.token.refreshAt) {
+  /** `forceRefresh` skips the cache but still joins a refresh already in flight. */
+  getToken(options: { forceRefresh?: boolean } = {}): Promise<string> {
+    if (!options.forceRefresh && this.token && this.now() < this.token.refreshAt) {
       return Promise.resolve(this.token.value);
     }
     this.refreshPromise ??= this.refresh().finally(() => {
