@@ -5,16 +5,18 @@ import { AuthManager, type TokenResponse } from '../src/http/AuthManager';
 describe('AuthManager', () => {
   let now: number;
   let issued: number;
+  let lifetimeSec: number;
   let fetchToken: ReturnType<typeof vi.fn<() => Promise<TokenResponse>>>;
   let auth: AuthManager;
 
   beforeEach(() => {
     now = 0;
     issued = 0;
+    lifetimeSec = 3600;
     fetchToken = vi.fn(async () => {
       await Promise.resolve();
       issued += 1;
-      return { accessToken: `tok-${issued}`, expiresIn: 3600 };
+      return { accessToken: `tok-${issued}`, expiresIn: lifetimeSec };
     });
     auth = new AuthManager({ fetchToken, now: () => now });
   });
@@ -24,6 +26,38 @@ describe('AuthManager', () => {
     now += 3_539_000;
     expect(await auth.getToken()).toBe('tok-1');
     now += 2_000;
+    expect(await auth.getToken()).toBe('tok-2');
+    expect(fetchToken).toHaveBeenCalledTimes(2);
+  });
+
+  it('reuses a 30s token 10s later', async () => {
+    lifetimeSec = 30;
+    expect(await auth.getToken()).toBe('tok-1');
+    now += 10_000;
+    expect(await auth.getToken()).toBe('tok-1');
+    expect(fetchToken).toHaveBeenCalledTimes(1);
+  });
+
+  it('refreshes a 30s token once 27s have passed (10% margin)', async () => {
+    lifetimeSec = 30;
+    expect(await auth.getToken()).toBe('tok-1');
+    now += 26_999;
+    expect(await auth.getToken()).toBe('tok-1');
+    now += 1;
+    expect(await auth.getToken()).toBe('tok-2');
+  });
+
+  it('reuses a 65s token 50s later', async () => {
+    lifetimeSec = 65;
+    expect(await auth.getToken()).toBe('tok-1');
+    now += 50_000;
+    expect(await auth.getToken()).toBe('tok-1');
+    expect(fetchToken).toHaveBeenCalledTimes(1);
+  });
+
+  it('never caches a token with expiresIn 0', async () => {
+    lifetimeSec = 0;
+    expect(await auth.getToken()).toBe('tok-1');
     expect(await auth.getToken()).toBe('tok-2');
     expect(fetchToken).toHaveBeenCalledTimes(2);
   });

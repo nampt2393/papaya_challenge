@@ -213,9 +213,11 @@ interface Transport { send(req: TransportRequest): Promise<TransportResponse> }
 
 ### 4.3 AuthManager
 
-- `getToken()`: returns cached JWT if it expires more than 60 s from now;
-  otherwise calls `POST /auth/token { apiKey }` and caches
-  `{ accessToken, expiresAt = now + expiresIn }`.
+- `getToken()`: returns the cached JWT until its refresh point; otherwise calls
+  `POST /auth/token { apiKey }` and caches
+  `{ accessToken, refreshAt = now + expiresIn - margin }`, where
+  `margin = min(60 s, 10% of expiresIn)`. *(Amended: a flat 60 s margin made
+  every request refetch a token when `expiresIn` ≤ 60 s.)*
 - Single-flight: concurrent callers during a refresh await one shared promise
   (`refreshPromise ??= fetchToken().finally(() => refreshPromise = undefined)`).
   On success all waiters receive the same new token. On failure all waiters

@@ -149,7 +149,7 @@ curl -X POST localhost:4000/__mock/reset
 | `MOCK_PORT` | `4000` | Listen port |
 | `MOCK_API_KEYS` | `pk_test_dev_123` | Comma-separated accepted API keys |
 | `MOCK_JWT_SECRET` | `dev-secret-change-me` | HS256 signing secret |
-| `MOCK_JWT_TTL_SEC` | `3600` | Token lifetime. Set it low (e.g. `65`) to see automatic refresh. |
+| `MOCK_JWT_TTL_SEC` | `3600` | Token lifetime. Set it low (e.g. `30`) to see the SDK refresh the token about every 27 s. |
 | `CHAOS` | `on` | `off` disables the delay and the failures |
 | `MOCK_FAILURE_RATE` | `0.1` | Fraction of `/api/v1` requests answered with 503 |
 | `MOCK_DELAY_MIN_MS` / `MOCK_DELAY_MAX_MS` | `200` / `500` | Simulated latency |

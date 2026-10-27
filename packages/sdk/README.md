@@ -229,7 +229,7 @@ The SDK is for **server-side** use. Run it in your backend, never in a browser o
 - **Sandbox vs production:** `pk_test_…` keys work with the sandbox, `pk_live_…` keys with production. Use a separate key per environment.
 - **Never log keys.** If you need to identify a key in logs, use `maskApiKey(key)`. The SDK never includes the key in its errors.
 - **Rotation:** to rotate a key, deploy the new one and restart. The SDK fetches a new token the first time it needs one. If you run several instances, roll them one at a time; the old and new keys both work during the overlap.
-- **Tokens are handled for you.** The SDK exchanges the key for a 1-hour access token and refreshes it 60 seconds before expiry. If the API rejects a token early, the SDK refreshes and retries the request once. When many requests run at the same time, they share a single refresh.
+- **Tokens are handled for you.** The SDK exchanges the key for a 1-hour access token and refreshes it shortly before expiry (10% of the token's lifetime early, at most 60 seconds). If the API rejects a token early, the SDK refreshes and retries the request once. When many requests run at the same time, they share a single refresh.
 
 ## 3. Configuring environments
 

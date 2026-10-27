@@ -4,8 +4,12 @@ export interface TokenResponse {
   expiresIn: number;
 }
 
-/** Refresh this long before the token actually expires. */
-const REFRESH_MARGIN_MS = 60_000;
+/**
+ * Refresh before the token actually expires, by 10% of its lifetime but never
+ * more than 60s, so short-lived tokens are still reused.
+ */
+const MAX_REFRESH_MARGIN_MS = 60_000;
+const REFRESH_MARGIN_RATIO = 0.1;
 
 /**
  * Owns the access token. Concurrent callers share a single in-flight refresh,
@@ -14,7 +18,7 @@ const REFRESH_MARGIN_MS = 60_000;
 export class AuthManager {
   private readonly fetchToken: () => Promise<TokenResponse>;
   private readonly now: () => number;
-  private token: { value: string; expiresAt: number } | undefined;
+  private token: { value: string; refreshAt: number } | undefined;
   private refreshPromise: Promise<string> | undefined;
 
   constructor(options: { fetchToken: () => Promise<TokenResponse>; now?: () => number }) {
@@ -23,7 +27,7 @@ export class AuthManager {
   }
 
   getToken(): Promise<string> {
-    if (this.token && this.token.expiresAt - REFRESH_MARGIN_MS > this.now()) {
+    if (this.token && this.now() < this.token.refreshAt) {
       return Promise.resolve(this.token.value);
     }
     this.refreshPromise ??= this.refresh().finally(() => {
@@ -42,7 +46,9 @@ export class AuthManager {
 
   private async refresh(): Promise<string> {
     const { accessToken, expiresIn } = await this.fetchToken();
-    this.token = { value: accessToken, expiresAt: this.now() + expiresIn * 1000 };
+    const lifetimeMs = expiresIn * 1000;
+    const marginMs = Math.min(MAX_REFRESH_MARGIN_MS, lifetimeMs * REFRESH_MARGIN_RATIO);
+    this.token = { value: accessToken, refreshAt: this.now() + lifetimeMs - marginMs };
     return accessToken;
   }
 }
