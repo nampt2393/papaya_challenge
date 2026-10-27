@@ -17,6 +17,26 @@ function stringFields(value: unknown): Record<string, string> {
   return fields;
 }
 
+/**
+ * For a 2xx response whose body is not parsed JSON, e.g. a website or proxy page answering instead of the API.
+ * Never retried: the server answered, and may have acted on the request.
+ */
+export function invalidResponseError(res: TransportResponse): ApiError {
+  const contentType = res.headers['content-type']?.split(';')[0]?.trim();
+  const got =
+    res.body === undefined
+      ? 'an empty body'
+      : contentType?.includes('json')
+        ? 'malformed JSON'
+        : (contentType ?? 'a body without a content type');
+  return new ApiError(`Expected a JSON response but got ${got} (status ${res.status})`, {
+    status: res.status,
+    code: 'INVALID_RESPONSE',
+    body: res.body,
+    requestId: res.headers['x-request-id'],
+  });
+}
+
 /** Turns a non-2xx response into the matching typed error. Tolerates non-JSON bodies. */
 export function mapResponseError(res: TransportResponse): SDKError {
   const body = isRecord(res.body) ? res.body : undefined;

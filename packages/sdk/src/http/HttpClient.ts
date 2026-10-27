@@ -1,6 +1,6 @@
 import { NetworkError, SDKError } from '../errors';
 import { AuthManager, type TokenResponse } from './AuthManager';
-import { mapResponseError } from './mapResponseError';
+import { invalidResponseError, mapResponseError } from './mapResponseError';
 import type { MultipartBody } from './multipart';
 import type { RetryPolicy } from './RetryPolicy';
 import type { HttpMethod, Transport, TransportRequest, TransportResponse } from './Transport';
@@ -79,7 +79,10 @@ export class HttpClient {
         throw error instanceof SDKError ? error : new NetworkError('Network request failed', { cause: error });
       }
 
-      if (res.status >= 200 && res.status < 300) return res.body as T;
+      if (res.status >= 200 && res.status < 300) {
+        if (typeof res.body === 'object' && res.body !== null) return res.body as T;
+        throw invalidResponseError(res);
+      }
 
       // One re-authentication per request, not counted as a retry.
       if (res.status === 401 && token !== undefined && !reauthenticated && replayable) {

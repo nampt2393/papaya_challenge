@@ -178,6 +178,7 @@ Every error the SDK throws extends `SDKError`, which extends `Error`. Use `insta
 | `AuthError` | Invalid API key, or a token the API keeps rejecting after a refresh | `code: 'INVALID_API_KEY' \| 'TOKEN_EXPIRED' \| 'UNAUTHORIZED'` |
 | `NetworkError` | No HTTP response: connection failure or timeout, after retries | `code: 'NETWORK_ERROR' \| 'TIMEOUT'`, `retryable`, `requestSent` (the server may have received the request), `cause` |
 | `ApiError` | Any other error response, including 503 after retries | `status`, `code` (e.g. `NOT_FOUND`, `SERVICE_UNAVAILABLE`, `FILE_TOO_LARGE`, or `HTTP_<status>` for non-JSON bodies), `body` |
+| `ApiError` with `code: 'INVALID_RESPONSE'` | A success status (2xx) whose body isn't JSON, e.g. an HTML page. Never retried. | `status` (e.g. `200`), `body` (the raw text) |
 
 All errors carry `code`, `message` and, when the API returned one, `requestId` (from the `x-request-id` header).
 
@@ -478,6 +479,7 @@ A transport resolves for every HTTP status and rejects only with `NetworkError`,
 | `AuthError` `TOKEN_EXPIRED` | The API still rejected the token after a refresh, which points to clock or secret problems | Check the server clock; on the mock server, don't change `MOCK_JWT_SECRET` while clients are running |
 | `NetworkError` `NETWORK_ERROR` | The API is unreachable | Check `baseUrl` and connectivity; for local work, is `npm run mock` running? |
 | `NetworkError` `TIMEOUT` | No response within `timeout` | Increase `timeout`, or check the API's status |
+| `ApiError` `INVALID_RESPONSE` with an HTML `body` | Something other than the API answered: `baseUrl` points at a website, or a proxy or captive portal replied | Check `baseUrl` (it's the API's root, without `/api/v1`) and your network's proxy settings |
 | `ApiError` 503 `SERVICE_UNAVAILABLE` | The service is still failing after all retries | Queue the work and retry later; increase `maxRetries` if the outages are brief |
 | `ValidationError { size: 'must be at most 10 MB' }` / `ApiError` 413 `FILE_TOO_LARGE` | The file is over 10 MB | Compress the PDF or scan at a lower resolution |
 | `ValidationError { size: 'declared … bytes, but the stream provided …' }` | The stream's `size` option doesn't match its real length, or a file changed while it was uploading | Pass the exact byte count (e.g. the object's `ContentLength` from storage), or buffer the stream first |

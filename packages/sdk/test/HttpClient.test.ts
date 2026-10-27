@@ -153,6 +153,60 @@ describe('HttpClient', () => {
     expect(error).toMatchObject({ status: 502, code: 'HTTP_502', message: 'Request failed with status 502', body: '<h1>Bad Gateway</h1>' });
   });
 
+  describe('2xx responses without a JSON body', () => {
+    it('throws ApiError INVALID_RESPONSE for a 200 HTML page, with the raw body and requestId', async () => {
+      const { client } = setup(() => ({
+        status: 200,
+        headers: { 'content-type': 'text/html', 'x-request-id': 'req-7' },
+        body: '<html>app</html>',
+      }));
+      const error = await client.request({ method: 'GET', path: '/claims/CLM-1' }).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ApiError);
+      expect(error).toMatchObject({
+        status: 200,
+        code: 'INVALID_RESPONSE',
+        message: 'Expected a JSON response but got text/html (status 200)',
+        body: '<html>app</html>',
+        requestId: 'req-7',
+      });
+    });
+
+    it('throws ApiError INVALID_RESPONSE for an empty 200', async () => {
+      const { client } = setup(() => ({ status: 200, headers: {}, body: undefined }));
+      await expect(client.request({ method: 'GET', path: '/claims' })).rejects.toMatchObject({
+        name: 'ApiError',
+        code: 'INVALID_RESPONSE',
+        message: 'Expected a JSON response but got an empty body (status 200)',
+      });
+    });
+
+    it('does not retry an invalid response', async () => {
+      const { client, apiCalls } = setup(() => ({ status: 200, headers: { 'content-type': 'text/html' }, body: '<html></html>' }));
+      await expect(client.request({ method: 'POST', path: '/claims', json: {} })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+      expect(apiCalls()).toBe(1);
+    });
+
+    it('fails the token request with INVALID_RESPONSE instead of sending Bearer undefined', async () => {
+      const transport = fakeTransport(() => ({ status: 200, headers: { 'content-type': 'text/html' }, body: '<html>app</html>' }));
+      const client = new HttpClient({
+        baseUrl: 'http://api.test',
+        apiKey: 'pk_test_dev_123',
+        timeoutMs: 1000,
+        transport,
+        retry: new RetryPolicy({ maxRetries: 3, random: () => 0 }),
+        sleep: async () => {},
+      });
+      const error = await client.request({ method: 'GET', path: '/claims' }).catch((e: unknown) => e);
+      expect(error).toMatchObject({ name: 'ApiError', code: 'INVALID_RESPONSE' });
+      expect(transport.calls.filter((c) => !isTokenRequest(c))).toHaveLength(0);
+    });
+
+    it('returns a JSON array body unchanged', async () => {
+      const { client } = setup(() => json(200, [{ id: 'DOC-1' }]));
+      await expect(client.request({ method: 'GET', path: '/claims/CLM-1/documents' })).resolves.toEqual([{ id: 'DOC-1' }]);
+    });
+  });
+
   it('does not retry a non-replayable multipart body', async () => {
     const { client, apiCalls } = setup(() => json(503, { code: 'SERVICE_UNAVAILABLE' }));
     const multipart = buildMultipart(

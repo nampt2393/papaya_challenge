@@ -267,6 +267,11 @@ for attempt in 0..maxRetries:
   map → return body as T, or throw typed error
 ```
 
+A 2xx response is returned only when its body is parsed JSON (an object or array).
+Otherwise it throws `ApiError { code: 'INVALID_RESPONSE', status, body: rawText }`, never
+retried. This covers a `baseUrl` that points at a website, or a proxy page answering
+`200`. *(Amended: a non-JSON 2xx body used to be returned as a string typed as `T`.)*
+
 Status → error mapping:
 
 | Response | Error |
