@@ -14,7 +14,7 @@ const WRONG_API_KEY = 'pk_test_wrong';
 interface Scenario {
   description: string;
   /** The error this scenario demonstrates; `undefined` means it should succeed. */
-  expected?: typeof ValidationError | typeof AuthError | typeof ApiError | typeof NetworkError;
+  expected?: { label: string; matches: (error: unknown) => boolean };
   /** The API key the scenario uses, for the hint printed with an `AuthError`. */
   apiKey?: string;
   run: () => Promise<void>;
@@ -33,14 +33,14 @@ const scenarios = {
   },
   validation: {
     description: 'submit an invalid claim; the SDK rejects it without sending a request',
-    expected: ValidationError,
+    expected: { label: 'ValidationError', matches: (e) => e instanceof ValidationError },
     run: async () => {
       await createSdk().claims.create({ ...sampleClaim(), policyId: '123', diagnosisCode: 'flu', amount: -50 });
     },
   },
   auth: {
     description: `the SDK is created with a wrong API key (${WRONG_API_KEY})`,
-    expected: AuthError,
+    expected: { label: 'AuthError INVALID_API_KEY', matches: (e) => e instanceof AuthError && e.code === 'INVALID_API_KEY' },
     apiKey: WRONG_API_KEY,
     run: async () => {
       await createSdk({ apiKey: WRONG_API_KEY }).claims.create(sampleClaim());
@@ -48,14 +48,14 @@ const scenarios = {
   },
   'not-found': {
     description: 'fetch a claim that does not exist (CLM-9999)',
-    expected: ApiError,
+    expected: { label: 'ApiError 404', matches: (e) => e instanceof ApiError && e.status === 404 },
     run: async () => {
       await createSdk().claims.get('CLM-9999');
     },
   },
   network: {
     description: 'the API is unreachable (baseUrl points at a closed port); the SDK retries 3 times first',
-    expected: NetworkError,
+    expected: { label: 'NetworkError', matches: (e) => e instanceof NetworkError },
     run: async () => {
       await createSdk({ baseUrl: 'http://127.0.0.1:1' }).claims.get('CLM-0001');
     },
@@ -89,9 +89,12 @@ async function runScenario(name: ScenarioName): Promise<boolean> {
     await scenario.run();
   } catch (error) {
     reportError(error, scenario.apiKey);
-    return scenario.expected !== undefined && error instanceof scenario.expected;
+    if (!scenario.expected) return false;
+    const matched = scenario.expected.matches(error);
+    if (!matched) console.error(`Expected ${scenario.expected.label}, but got a different error.`);
+    return matched;
   }
-  if (scenario.expected) console.error(`Expected ${scenario.expected.name}, but the call succeeded.`);
+  if (scenario.expected) console.error(`Expected ${scenario.expected.label}, but the call succeeded.`);
   return scenario.expected === undefined;
 }
 
